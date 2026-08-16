@@ -104,13 +104,38 @@
                 <h2 class="greeting" data-i18n="greeting">Namaste, Ram Bhai</h2>
                 <p class="date-display">16 Aug 2026</p>
             </div>
-            <div class="profile-icon" onclick="openModal('profile-modal')">
-                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                    <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" />
-                    <circle cx="12" cy="7" r="4" />
-                </svg>
+            <div style="display: flex; gap: 10px; align-items: center;">
+                <button class="lang-btn" onclick="toggleLangMenu()" id="lang-btn">
+                    <span id="current-lang-label">EN</span>
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                        stroke-width="2.5">
+                        <polyline points="6 9 12 15 18 9"></polyline>
+                    </svg>
+                </button>
+                <div class="profile-icon" onclick="openModal('profile-modal')">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" />
+                        <circle cx="12" cy="7" r="4" />
+                    </svg>
+                </div>
             </div>
         </header>
+
+        <div class="lang-menu" id="lang-menu" style="display: none;">
+            <div class="lang-menu-item active" onclick="switchLang('en')">
+                <span>English</span>
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--ios-blue)" stroke-width="2.5">
+                    <polyline points="20 6 9 17 4 12"></polyline>
+                </svg>
+            </div>
+            <div class="lang-menu-item" onclick="switchLang('hi')">
+                <span>हिंदी</span>
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--ios-blue)" stroke-width="2.5"
+                    style="opacity: 0;">
+                    <polyline points="20 6 9 17 4 12"></polyline>
+                </svg>
+            </div>
+        </div>
 
         <!-- DASHBOARD VIEW -->
         <main id="view-home" class="main-view active pb-nav">

@@ -89,7 +89,9 @@ const locales = {
         todaySummary: "Today\'s Summary", waterUsed: "Water Used", revenue: "Revenue", received: "Received", pending: "Pending",
         quickActions: "Quick Actions", paaniHisab: "Paani Ka Hisab", payment: "Payment", pendingPayments: "Pending Payments",
         navHome: "Home", navCustomers: "Customers", navBahi: "Bahi",
-        customer: "Customer", startTime: "Start Time", endTime: "End Time", duration: "Duration", rate: "Rate", totalAmount: "Total Amount", save: "Save Record"
+        customer: "Customer", startTime: "Start Time", endTime: "End Time", duration: "Duration", rate: "Rate", totalAmount: "Total Amount", save: "Save Record",
+        noPendingPayments: "No pending payments",
+        noCustomers: "Add customers to get started",
     },
     hi: {
         appTitle: "अपना ट्यूबवेल",
@@ -99,7 +101,9 @@ const locales = {
         todaySummary: "आज का सारांश", waterUsed: "पानी लगा", revenue: "कुल कमाई", received: "प्राप्त हुआ", pending: "बाकी",
         quickActions: "तुरंत कार्य", paaniHisab: "पानी का हिसाब", payment: "भुगतान", pendingPayments: "बाकी भुगतान",
         navHome: "होम", navCustomers: "ग्राहक", navBahi: "बही-खाता",
-        customer: "ग्राहक चुनें", startTime: "शुरू का समय", endTime: "बंद का समय", duration: "कुल समय", rate: "रेट", totalAmount: "कुल राशि", save: "सेव करें"
+        customer: "ग्राहक चुनें", startTime: "शुरू का समय", endTime: "बंद का समय", duration: "कुल समय", rate: "रेट", totalAmount: "कुल राशि", save: "सेव करें",
+        noPendingPayments: "कोई बाकी भुगतान नहीं",
+        noCustomers: "शुरू करने के लिए ग्राहक जोड़ें",
     }
 };
 

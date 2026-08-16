@@ -311,16 +311,31 @@ window.addNewCustomer = async function () {
     showToast(currentLang === 'en' ? 'Customer added!' : 'ग्राहक जोड़ दिया गया!', 'success');
 };
 
-window.renderCustomers = function () {
-    const customers = getCustomers();
+window.renderCustomers = async function () {
+    const ownerUid = localStorage.getItem('user_uid');
     const list = document.getElementById('customers-list');
     if (!list) return;
-    if (customers.length === 0) {
+
+    // First render from local
+    const localCustomers = getCustomers();
+    if (localCustomers.length === 0) {
         list.innerHTML = '<div class="list-item empty-state"><div class="item-info"><p data-i18n="noCustomers">' + locales[currentLang].noCustomers + '</p></div></div>';
-        return;
+    } else {
+        list.innerHTML = localCustomers.map(c => `<div class="list-item" onclick="openCustomerDetail('${c.id}')"><div class="item-info"><h4>${c.name}</h4><p>${c.phone}</p></div><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--ios-gray)" stroke-width="2"><polyline points="9 18 15 12 9 6"></polyline></svg></div>`).join('');
     }
-    list.innerHTML = customers.map(c => '<div class="list-item" onclick="openCustomerDetail(\'' + c.id + '\')"><div class="item-info"><h4>' + c.name + '</h4><p>' + c.phone + '</p></div><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--ios-gray)" stroke-width="2"><polyline points="9 18 15 12 9 6"></polyline></svg></div>').join('');
-}
+
+    // Then sync from Firestore
+    const custRef = collection(db, 'customers');
+    const q = query(custRef, where('ownerId', '==', ownerUid));
+    const snapshot = await getDocs(q);
+    const firestoreCustomers = [];
+    snapshot.forEach(d => firestoreCustomers.push(d.data()));
+    if (firestoreCustomers.length > 0) {
+        saveCustomers(firestoreCustomers);
+        loadCustomerData();
+        list.innerHTML = firestoreCustomers.map(c => `<div class="list-item" onclick="openCustomerDetail('${c.id}')"><div class="item-info"><h4>${c.name}</h4><p>${c.phone}</p></div><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--ios-gray)" stroke-width="2"><polyline points="9 18 15 12 9 6"></polyline></svg></div>`).join('');
+    }
+};
 
 window.updateDashboardStats = function () {
     const history = getWaterHistory();
@@ -364,74 +379,121 @@ window.renderPendingPayments = function () {
 /* --- CUSTOMER ROLE: LINK TO TUBEWELL --- */
 window.renderCustomerLinkedTubewell = function () {
     const link = JSON.parse(localStorage.getItem('customer_link') || 'null');
+    const pending = JSON.parse(localStorage.getItem('pending_request_owner') || 'null');
     const infoDiv = document.getElementById('customer-linked-tubewell-info');
     const formDiv = document.getElementById('link-tubewell-form');
+    const statusDiv = document.getElementById('customer-request-status');
     if (!infoDiv) return;
+
     if (link) {
         const ownerInfo = JSON.parse(localStorage.getItem('owner_info') || '{}');
         const twData = JSON.parse(localStorage.getItem('tubewell_data') || '{}');
         infoDiv.innerHTML = '<div class="list-item" style="padding:0;"><div class="item-info"><h4>' + (twData.name || 'Tubewell') + '</h4><p>' + (ownerInfo.name || 'Owner') + ' • ' + (twData.location || '') + '</p><p style="margin-top:4px;">Rate: ₹' + (twData.rate || 150) + '/hr</p></div></div><button class="btn-ghost mt-2" onclick="unlinkTubewell()" style="width:100%; color:var(--ios-red);">' + locales[currentLang].unlink + '</button>';
         if (formDiv) formDiv.style.display = 'none';
+        if (statusDiv) statusDiv.style.display = 'none';
         const linkedName = document.getElementById('linked-tubewell-name');
         if (linkedName) linkedName.innerText = twData.name || 'Tubewell';
-    } else {
-        infoDiv.innerHTML = '<p style="color: var(--ios-gray); font-size: 14px;">' + (currentLang === 'en' ? 'No tubewell linked' : 'कोई ट्यूबवेल लिंक नहीं') + '</p>';
-        if (formDiv) formDiv.style.display = 'block';
+        return;
     }
-}
 
-window.linkToOwnerTubewell = async function () {
+    if (pending && pending.status === 'pending') {
+        infoDiv.innerHTML = '<p style="color: var(--ios-gray); font-size: 14px;">' + (currentLang === 'en' ? 'Request sent to' : 'अनुरोध भेजा गया') + ' ' + pending.ownerPhone + '</p>';
+        if (formDiv) formDiv.style.display = 'none';
+        if (statusDiv) statusDiv.style.display = 'block';
+        return;
+    }
+
+    if (pending && pending.status === 'rejected') {
+        infoDiv.innerHTML = '<p style="color: var(--ios-red); font-size: 14px;">' + (currentLang === 'en' ? 'Request was rejected' : 'अनुरोध अस्वीकार कर दिया गया') + '</p>';
+        if (formDiv) formDiv.style.display = 'block';
+        if (statusDiv) statusDiv.style.display = 'none';
+        localStorage.removeItem('pending_request_owner');
+        return;
+    }
+
+    infoDiv.innerHTML = '<p style="color: var(--ios-gray); font-size: 14px;">' + (currentLang === 'en' ? 'No tubewell linked' : 'कोई ट्यूबवेल लिंक नहीं') + '</p>';
+    if (formDiv) formDiv.style.display = 'block';
+    if (statusDiv) statusDiv.style.display = 'none';
+};
+
+window.sendLinkRequest = async function () {
     const phone = document.getElementById('link-owner-phone').value.trim();
     if (phone.length !== 10) { showToast(currentLang === 'en' ? 'Enter valid 10-digit phone' : 'सही 10 अंकों का फोन दर्ज करें', 'error'); return; }
 
-    // Query Firestore for owner
     const usersRef = collection(db, 'users');
     const q = query(usersRef, where('phone', '==', phone), where('role', '==', 'owner'));
     const snapshot = await getDocs(q);
 
     if (snapshot.empty) {
-        showToast(currentLang === 'en' ? 'Owner not found. Ask owner to add you first.' : 'मालिक नहीं मिला। मालिक से कहें कि वह आपको जोड़े।', 'error');
+        showToast(currentLang === 'en' ? 'Owner not found' : 'मालिक नहीं मिला', 'error');
         return;
     }
 
     const ownerData = snapshot.docs[0].data();
     const ownerUid = snapshot.docs[0].id;
-
-    // Get owner's tubewell
-    const twRef = doc(db, 'tubewells', ownerUid + '_primary');
-    const twDoc = await getDoc(twRef);
-    const twData = twDoc.exists() ? twDoc.data() : {};
-
-    localStorage.setItem('customer_link', JSON.stringify({
-        ownerPhone: phone,
-        ownerUid: ownerUid,
-        tubewellId: 'primary',
-        linkedAt: new Date().toISOString()
-    }));
-
-    // Save link to Firestore for owner to see
     const customerUid = localStorage.getItem('user_uid');
     const customerPhone = localStorage.getItem('user_phone');
     const userInfo = JSON.parse(localStorage.getItem('user_info') || '{}');
-    await setDoc(doc(db, 'customer_links', customerUid + '_' + ownerUid), {
+
+    // Check if already requested
+    const reqRef = collection(db, 'link_requests');
+    const existing = query(reqRef, where('ownerUid', '==', ownerUid), where('customerUid', '==', customerUid));
+    const exSnap = await getDocs(existing);
+    if (!exSnap.empty) {
+        const status = exSnap.docs[0].data().status;
+        if (status === 'pending') { showToast(currentLang === 'en' ? 'Request already pending' : 'अनुरोध पहले से लंबित है', 'info'); return; }
+        if (status === 'accepted') { showToast(currentLang === 'en' ? 'Already linked' : 'पहले से जुड़ा हुआ है', 'info'); return; }
+    }
+
+    // Create request
+    await addDoc(reqRef, {
+        ownerUid,
+        ownerPhone: phone,
         customerUid,
         customerPhone,
         customerName: userInfo.name || '',
-        ownerUid,
-        ownerPhone: phone,
-        tubewellId: 'primary',
-        status: 'linked',
-        linkedAt: serverTimestamp()
+        status: 'pending',
+        createdAt: serverTimestamp()
     });
 
+    // Create notification for owner
+    await addDoc(collection(db, 'notifications'), {
+        toUid: ownerUid,
+        type: 'link_request',
+        title: currentLang === 'en' ? 'New link request' : 'नया लिंक अनुरोध',
+        body: (userInfo.name || customerPhone) + (currentLang === 'en' ? ' wants to connect' : ' जुड़ना चाहता है'),
+        requestData: { customerUid, customerPhone, customerName: userInfo.name || '' },
+        read: false,
+        createdAt: serverTimestamp()
+    });
+
+    localStorage.setItem('pending_request_owner', JSON.stringify({ ownerUid, ownerPhone: phone, status: 'pending' }));
     renderCustomerLinkedTubewell();
-    showToast(currentLang === 'en' ? 'Linked successfully!' : 'सफलतापूर्वक जुड़ गया!', 'success');
+    showToast(currentLang === 'en' ? 'Request sent!' : 'अनुरोध भेज दिया गया!', 'success');
 };
-window.unlinkTubewell = function () {
+
+
+window.unlinkTubewell = async function () {
+    const customerUid = localStorage.getItem('user_uid');
+    const link = JSON.parse(localStorage.getItem('customer_link') || 'null');
+    if (link && link.ownerUid) {
+        // Only remove customer_links doc (customer owns this)
+        const linksRef = collection(db, 'customer_links');
+        const q = query(linksRef, where('customerUid', '==', customerUid), where('ownerUid', '==', link.ownerUid));
+        const snap = await getDocs(q);
+        snap.forEach(async (d) => { await deleteDoc(doc(db, 'customer_links', d.id)); });
+
+        // Also update the link_requests doc status to rejected so owner knows
+        const reqRef = collection(db, 'link_requests');
+        const rq = query(reqRef, where('ownerUid', '==', link.ownerUid), where('customerUid', '==', customerUid));
+        const rsnap = await getDocs(rq);
+        rsnap.forEach(async (d) => { await updateDoc(doc(db, 'link_requests', d.id), { status: 'rejected' }); });
+    }
     localStorage.removeItem('customer_link');
+    localStorage.removeItem('pending_request_owner');
     renderCustomerLinkedTubewell();
     showToast(currentLang === 'en' ? 'Unlinked' : 'हटा दिया गया', 'info');
-}
+};
 
 window.renderCustomerQueuePosition = function () {
     const queue = getQueue();
@@ -448,6 +510,101 @@ window.renderCustomerQueuePosition = function () {
     if (idx === 0) { posEl.innerHTML = '<span style="color:var(--ios-green); font-size:13px;">' + locales[currentLang].youAreNext + '</span>'; return; }
     posEl.innerText = '#' + (idx + 1);
 }
+
+
+/* --- OWNER: LINK REQUESTS --- */
+window.renderLinkRequests = async function () {
+    const ownerUid = localStorage.getItem('user_uid');
+    if (!ownerUid) return;
+
+    const reqRef = collection(db, 'link_requests');
+    const q = query(reqRef, where('ownerUid', '==', ownerUid), where('status', '==', 'pending'));
+    const snapshot = await getDocs(q);
+
+    const section = document.getElementById('link-requests-section');
+    const list = document.getElementById('link-requests-list');
+    const dot = document.getElementById('notif-dot-customers');
+
+    if (snapshot.empty) {
+        if (section) section.style.display = 'none';
+        if (dot) dot.style.display = 'none';
+        return;
+    }
+
+    if (section) section.style.display = 'block';
+    if (dot) dot.style.display = 'block';
+
+    list.innerHTML = snapshot.docs.map(d => {
+        const data = d.data();
+        return `<div class="list-item" style="flex-direction: column; align-items: flex-start; gap: 8px;"><div class="item-info"><h4>${data.customerName || data.customerPhone}</h4><p>${data.customerPhone}</p></div><div style="display: flex; gap: 8px; width: 100%;"><button class="btn-primary" style="flex: 1; padding: 8px; font-size: 13px;" onclick="acceptLinkRequest('${d.id}', '${data.customerUid}', '${data.customerPhone}', '${(data.customerName || '').replace(/'/g, "\\'")}')">${locales[currentLang].accept}</button><button class="btn-danger" style="flex: 1; padding: 8px; font-size: 13px;" onclick="rejectLinkRequest('${d.id}', '${data.customerUid}')">${locales[currentLang].reject}</button></div></div>`;
+    }).join('');
+};
+
+window.acceptLinkRequest = async function (requestId, customerUid, customerPhone, customerName) {
+    const ownerUid = localStorage.getItem('user_uid');
+    const ownerPhone = localStorage.getItem('user_phone');
+
+    // Update request status
+    await updateDoc(doc(db, 'link_requests', requestId), { status: 'accepted' });
+
+    // Add to customers collection
+    const custId = 'cust_' + Date.now();
+    await setDoc(doc(db, 'customers', custId), {
+        id: custId,
+        name: customerName || customerPhone,
+        phone: customerPhone,
+        customerUid: customerUid,
+        tubewellId: 'primary',
+        ownerId: ownerUid,
+        ownerPhone: ownerPhone,
+        linkedAt: serverTimestamp()
+    });
+
+    // Create customer_link doc
+    await setDoc(doc(db, 'customer_links', customerUid + '_' + ownerUid), {
+        customerUid,
+        customerPhone,
+        customerName: customerName || '',
+        ownerUid,
+        ownerPhone,
+        tubewellId: 'primary',
+        status: 'linked',
+        linkedAt: serverTimestamp()
+    });
+
+    // Notify customer
+    await addDoc(collection(db, 'notifications'), {
+        toUid: customerUid,
+        type: 'request_accepted',
+        title: currentLang === 'en' ? 'Request accepted' : 'अनुरोध स्वीकार',
+        body: locales[currentLang].requestAcceptedMsg,
+        requestData: { ownerUid: ownerUid, ownerPhone: ownerPhone },
+        read: false,
+        createdAt: serverTimestamp()
+    });
+
+    renderLinkRequests();
+    renderCustomers();
+    showToast(currentLang === 'en' ? 'Customer linked!' : 'ग्राहक जुड़ गया!', 'success');
+};
+
+window.rejectLinkRequest = async function (requestId, customerUid) {
+    await updateDoc(doc(db, 'link_requests', requestId), { status: 'rejected' });
+
+    // Notify customer
+    await addDoc(collection(db, 'notifications'), {
+        toUid: customerUid,
+        type: 'request_rejected',
+        title: currentLang === 'en' ? 'Request rejected' : 'अनुरोध अस्वीकार',
+        body: locales[currentLang].requestRejectedMsg,
+        requestData: { ownerUid: ownerUid, ownerPhone: ownerPhone },
+        read: false,
+        createdAt: serverTimestamp()
+    });
+
+    renderLinkRequests();
+    showToast(currentLang === 'en' ? 'Request rejected' : 'अनुरोध अस्वीकार कर दिया', 'info');
+};
 
 /* --- REAL-TIME LISTENERS --- */
 let unsubTubewell = null;
@@ -491,32 +648,77 @@ window.startOwnerListeners = function () {
         renderCustomers();
         populateCustomerDropdowns();
     });
+
+    // Listen for new link requests
+    const reqRef = collection(db, 'link_requests');
+    const rq = query(reqRef, where('ownerUid', '==', ownerUid), where('status', '==', 'pending'));
+    onSnapshot(rq, () => {
+        renderLinkRequests();
+    });
 };
 
 window.startCustomerListeners = function () {
-    const link = JSON.parse(localStorage.getItem('customer_link') || 'null');
-    if (!link || !link.ownerUid) return;
-
-    // Listen to owner's tubewell status
-    const twRef = doc(db, 'tubewells', link.ownerUid + '_primary');
-    unsubTubewell = onSnapshot(twRef, (doc) => {
-        if (doc.exists()) {
-            const data = doc.data();
-            saveTubewellData(data);
-            renderCustomerLinkedTubewell();
-            renderCustomerQueuePosition();
-        }
-    });
-
-    // Listen to queue for this customer
     const customerUid = localStorage.getItem('user_uid');
-    const queueRef = collection(db, 'queues');
-    const q = query(queueRef, where('ownerId', '==', link.ownerUid));
-    unsubQueue = onSnapshot(q, (snapshot) => {
-        const queue = [];
-        snapshot.forEach(d => queue.push(d.data()));
-        saveQueue(queue);
-        renderCustomerQueuePosition();
+    if (!customerUid) return;
+
+    const link = JSON.parse(localStorage.getItem('customer_link') || 'null');
+    const pending = JSON.parse(localStorage.getItem('pending_request_owner') || 'null');
+
+    // If already linked, listen to tubewell and queue
+    if (link && link.ownerUid) {
+        const twRef = doc(db, 'tubewells', link.ownerUid + '_primary');
+        unsubTubewell = onSnapshot(twRef, (doc) => {
+            if (doc.exists()) {
+                const data = doc.data();
+                saveTubewellData(data);
+                renderCustomerLinkedTubewell();
+                renderCustomerQueuePosition();
+            }
+        });
+
+        const queueRef = collection(db, 'queues');
+        const q = query(queueRef, where('ownerId', '==', link.ownerUid));
+        unsubQueue = onSnapshot(q, (snapshot) => {
+            const queue = [];
+            snapshot.forEach(d => queue.push(d.data()));
+            saveQueue(queue);
+            renderCustomerQueuePosition();
+        });
+    }
+
+    // Always listen for notifications (accept/reject) regardless of link status
+    const notifRef = collection(db, 'notifications');
+    const nq = query(notifRef, where('toUid', '==', customerUid), where('read', '==', false));
+    onSnapshot(nq, (snapshot) => {
+        snapshot.docChanges().forEach(async change => {
+            if (change.type === 'added') {
+                const data = change.doc.data();
+                const pending = JSON.parse(localStorage.getItem('pending_request_owner') || 'null');
+                if (data.type === 'request_accepted') {
+                    const ownerPhone = pending ? pending.ownerPhone : (data.requestData ? data.requestData.ownerPhone : '');
+                    const ownerUid = pending ? pending.ownerUid : (data.requestData ? data.requestData.ownerUid : '');
+                    localStorage.setItem('customer_link', JSON.stringify({
+                        ownerPhone: ownerPhone,
+                        ownerUid: ownerUid,
+                        tubewellId: 'primary',
+                        linkedAt: new Date().toISOString()
+                    }));
+                    localStorage.removeItem('pending_request_owner');
+                    renderCustomerLinkedTubewell();
+                    renderCustomerQueuePosition();
+                    showToast(data.body, 'success');
+                } else if (data.type === 'request_rejected') {
+                    localStorage.setItem('pending_request_owner', JSON.stringify({
+                        ownerPhone: pending ? pending.ownerPhone : '',
+                        ownerUid: pending ? pending.ownerUid : '',
+                        status: 'rejected'
+                    }));
+                    renderCustomerLinkedTubewell();
+                    showToast(data.body, 'error');
+                }
+                await updateDoc(doc(db, 'notifications', change.doc.id), { read: true });
+            }
+        });
     });
 };
 
@@ -610,6 +812,20 @@ const locales = {
         totalCustomers: "Total customers",
         waterRunningFor: "Water running for",
         add: "Add",
+        linkRequestSent: "Link request sent",
+        requestPending: "Request pending",
+        waitingForApproval: "Waiting for owner approval",
+        newRequest: "New request",
+        accept: "Accept",
+        reject: "Reject",
+        requestAccepted: "Request accepted",
+        requestRejected: "Request rejected",
+        noNotifications: "No notifications",
+        linkRequests: "Link requests",
+        requestedBy: "Requested by",
+        requestAcceptedMsg: "Owner accepted your request",
+        requestRejectedMsg: "Owner rejected your request",
+        sendRequest: "Send request",
     },
     hi: {
         appTitle: "अपना ट्यूबवेल",
@@ -667,6 +883,20 @@ const locales = {
         totalCustomers: "कुल ग्राहक",
         waterRunningFor: "पानी चालू है",
         add: "जोड़ें",
+        linkRequestSent: "लिंक अनुरोध भेजा गया",
+        requestPending: "अनुरोध लंबित",
+        waitingForApproval: "मालिक की स्वीकृति का इंतजार",
+        newRequest: "नया अनुरोध",
+        accept: "स्वीकार करें",
+        reject: "अस्वीकार करें",
+        requestAccepted: "अनुरोध स्वीकार",
+        requestRejected: "अनुरोध अस्वीकार",
+        noNotifications: "कोई सूचना नहीं",
+        linkRequests: "लिंक अनुरोध",
+        requestedBy: "अनुरोध किया",
+        requestAcceptedMsg: "मालिक ने अनुरोध स्वीकार किया",
+        requestRejectedMsg: "मालिक ने अनुरोध अस्वीकार किया",
+        sendRequest: "अनुरोध भेजें",
     }
 };
 
@@ -1168,14 +1398,18 @@ function setupOwnerUI() {
             <span data-i18n="navHome">Home</span>
         </div>
         <div class="nav-item" data-target="view-customers">
-            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/>
-                <circle cx="9" cy="7" r="4"/>
-                <path d="M23 21v-2a4 4 0 0 0-3-3.87"/>
-                <path d="M16 3.13a4 4 0 0 1 0 7.75"/>
-            </svg>
-            <span data-i18n="navCustomers">Customers</span>
-        </div>
+                <div style="position: relative;">
+                    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" />
+                        <circle cx="9" cy="7" r="4" />
+                        <path d="M23 21v-2a4 4 0 0 0-3-3.87" />
+                        <path d="M16 3.13a4 4 0 0 1 0 7.75" />
+                    </svg>
+                    <span id="notif-dot-customers"
+                        style="position: absolute; top: -4px; right: -4px; width: 8px; height: 8px; background: var(--ios-red); border-radius: 50%; display: none;"></span>
+                </div>
+                <span data-i18n="navCustomers">Customers</span>
+            </div>
         <div class="nav-item" data-target="view-bahi">
             <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                 <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/>
@@ -1203,7 +1437,10 @@ function setupOwnerUI() {
             if (target) target.classList.add('active');
             window.scrollTo({ top: 0, behavior: 'smooth' });
             if (targetId === 'view-tubewells') renderTubewells();
-            if (targetId === 'view-customers') renderCustomers();
+            if (targetId === 'view-customers') {
+                renderCustomers();
+                renderLinkRequests();
+            }
         });
     });
 
@@ -1236,6 +1473,7 @@ function setupOwnerUI() {
     updateDashboardStats();
     renderPendingPayments();
     startOwnerListeners();
+    renderLinkRequests();
 }
 
 function setupCustomerUI() {
@@ -1306,6 +1544,34 @@ function setupCustomerUI() {
     document.getElementById('role-badge-text').style.background = 'rgba(52,199,89,0.1)';
     document.getElementById('role-badge-text').style.color = 'var(--ios-green)';
     renderCustomerLinkedTubewell();
+
+    // Check if there's a pending request and verify its status from Firestore
+    const pending = JSON.parse(localStorage.getItem('pending_request_owner') || 'null');
+    if (pending && pending.ownerUid) {
+        const reqRef = collection(db, 'link_requests');
+        const q = query(reqRef, where('ownerUid', '==', pending.ownerUid), where('customerUid', '==', localStorage.getItem('user_uid')));
+        getDocs(q).then(snapshot => {
+            if (!snapshot.empty) {
+                const status = snapshot.docs[0].data().status;
+                if (status === 'accepted') {
+                    localStorage.setItem('customer_link', JSON.stringify({
+                        ownerPhone: pending.ownerPhone,
+                        ownerUid: pending.ownerUid,
+                        tubewellId: 'primary',
+                        linkedAt: new Date().toISOString()
+                    }));
+                    localStorage.removeItem('pending_request_owner');
+                    renderCustomerLinkedTubewell();
+                    renderCustomerQueuePosition();
+                    showToast(currentLang === 'en' ? 'Request accepted!' : 'अनुरोध स्वीकार!', 'success');
+                } else if (status === 'rejected') {
+                    localStorage.setItem('pending_request_owner', JSON.stringify({ ...pending, status: 'rejected' }));
+                    renderCustomerLinkedTubewell();
+                    showToast(currentLang === 'en' ? 'Request rejected' : 'अनुरोध अस्वीकार', 'error');
+                }
+            }
+        });
+    }
     renderCustomerQueuePosition();
     startCustomerListeners();
 }

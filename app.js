@@ -86,9 +86,14 @@ const locales = {
         myProfile: "My Profile", darkMode: "Dark Mode", logout: "Logout", editProfile: "Edit Profile",
         saveChanges: "Save Changes", cancel: "Cancel", name: "Name", businessName: "Business Name",
         bahiSubtitle: "Select a customer to view their complete ledger.",
-        myTubewells: "My Tubewells", add: "Add", noTubewells: "No tubewells added yet.",
-        tubewellName: "Tubewell Name", location: "Location / Village", ratePerHour: "Rate per Hour (₹)",
-        addTubewell: "Add New Tubewell", addTubewellBtn: "Add Tubewell",
+        myTubewells: "My Tubewells",
+        add: "Add",
+        noTubewells: "No tubewells added yet.",
+        tubewellName: "Tubewell Name",
+        location: "Location / Village",
+        ratePerHour: "Rate per Hour (₹)",
+        addTubewell: "Add New Tubewell",
+        addTubewellBtn: "Add Tubewell",
         villageLocation: "Village / Location",
     },
     hi: {
@@ -104,12 +109,23 @@ const locales = {
         noCustomers: "शुरू करने के लिए ग्राहक जोड़ें",
         months: ["जनवरी", "फरवरी", "मार्च", "अप्रैल", "मई", "जून", "जुलाई", "अगस्त", "सितंबर", "अक्टूबर", "नवंबर", "दिसंबर"],
         hrs: "घंटे",
-        myProfile: "मेरी प्रोफाइल", darkMode: "डार्क मोड", logout: "लॉग आउट", editProfile: "प्रोफाइल एडिट करें",
-        saveChanges: "बदलाव सेव करें", cancel: "रद्द करें", name: "नाम", businessName: "व्यवसाय का नाम",
+        myProfile: "मेरी प्रोफाइल",
+        darkMode: "डार्क मोड",
+        logout: "लॉग आउट",
+        editProfile: "प्रोफाइल एडिट करें",
+        saveChanges: "बदलाव सेव करें",
+        cancel: "रद्द करें",
+        name: "नाम",
+        businessName: "व्यवसाय का नाम",
         bahiSubtitle: "पूरी बही-खाता देखने के लिए ग्राहक चुनें।",
-        myTubewells: "मेरे ट्यूबवेल", add: "जोड़ें", noTubewells: "अभी तक कोई ट्यूबवेल नहीं जोड़ा गया।",
-        tubewellName: "ट्यूबवेल का नाम", location: "गांव / स्थान", ratePerHour: "प्रति घंटा दर (₹)",
-        addTubewell: "नया ट्यूबवेल जोड़ें", addTubewellBtn: "ट्यूबवेल जोड़ें",
+        myTubewells: "मेरे ट्यूबवेल",
+        add: "जोड़ें",
+        noTubewells: "अभी तक कोई ट्यूबवेल नहीं जोड़ा गया।",
+        tubewellName: "ट्यूबवेल का नाम",
+        location: "गांव / स्थान",
+        ratePerHour: "प्रति घंटा दर (₹)",
+        addTubewell: "नया ट्यूबवेल जोड़ें",
+        addTubewellBtn: "ट्यूबवेल जोड़ें",
         villageLocation: "गांव / स्थान",
     }
 };
@@ -126,6 +142,15 @@ function setLanguage(lang) {
         const key = el.getAttribute('data-i18n');
         if (locales[lang][key]) el.innerText = locales[lang][key];
     });
+
+    // Update greeting with actual user name
+    const userInfo = JSON.parse(localStorage.getItem('user_info') || '{}');
+    const ownerInfo = JSON.parse(localStorage.getItem('owner_info') || '{}');
+    const userName = userInfo.name || ownerInfo.name || (lang === 'en' ? 'Ram Bhai' : 'राम भाई');
+    const greetingEl = document.querySelector('.greeting');
+    if (greetingEl) {
+        greetingEl.innerText = (lang === 'en' ? 'Namaste, ' : 'नमस्ते, ') + userName;
+    }
 
     document.getElementById('login-en').classList.toggle('active', lang === 'en');
     document.getElementById('login-hi').classList.toggle('active', lang === 'hi');

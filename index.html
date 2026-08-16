@@ -366,8 +366,44 @@
             <p style="color: var(--ios-gray); font-size: 14px; margin-bottom: 16px;" data-i18n="bahiSubtitle">Select a
                 customer to view their complete ledger.</p>
 
-            <div class="list-card">
+            <div class="list-card" id="bahi-customers-list">
+                <div class="list-item empty-state">
+                    <div class="item-info">
+                        <p data-i18n="noCustomers">Add customers to get started</p>
+                    </div>
+                </div>
             </div>
+        </main>
+
+        <!-- BAHI LEDGER VIEW -->
+        <main id="view-bahi-ledger" class="main-view pb-nav">
+            <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 16px;">
+                <button class="close-btn" onclick="showView('view-bahi')" style="position: static;">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                        stroke-width="2.5">
+                        <polyline points="15 18 9 12 15 6"></polyline>
+                    </svg>
+                </button>
+                <h3 class="section-title mb-0" id="bahi-ledger-name">Customer Name</h3>
+            </div>
+
+            <div class="stats-grid" style="margin-bottom: 16px;">
+                <div class="stat-card">
+                    <span class="stat-label">Total Due</span>
+                    <span class="stat-value text-red" id="bahi-total-due">₹0</span>
+                </div>
+                <div class="stat-card">
+                    <span class="stat-label">Total Paid</span>
+                    <span class="stat-value text-green" id="bahi-total-paid">₹0</span>
+                </div>
+                <div class="stat-card">
+                    <span class="stat-label">Balance</span>
+                    <span class="stat-value text-blue" id="bahi-balance">₹0</span>
+                </div>
+            </div>
+
+            <h3 class="section-title">Ledger</h3>
+            <div class="list-card" id="bahi-ledger-list"></div>
         </main>
 
         <!-- TUBEWELLS VIEW -->

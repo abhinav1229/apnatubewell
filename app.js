@@ -337,6 +337,70 @@ window.renderCustomers = async function () {
     }
 };
 
+window.renderBahiCustomers = function () {
+    const customers = getCustomers();
+    const list = document.getElementById('bahi-customers-list');
+    if (!list) return;
+    if (customers.length === 0) {
+        list.innerHTML = '<div class="list-item empty-state"><div class="item-info"><p data-i18n="noCustomers">' + locales[currentLang].noCustomers + '</p></div></div>';
+        return;
+    }
+    list.innerHTML = customers.map(c => '<div class="list-item" onclick="openBahiLedger(\'' + c.id + '\')"><div class="item-info"><h4>' + c.name + '</h4><p>' + c.phone + '</p></div><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--ios-gray)" stroke-width="2"><polyline points="9 18 15 12 9 6"></polyline></svg></div>').join('');
+};
+
+window.openBahiLedger = function (id) {
+    const cust = customerData[id];
+    if (!cust) {
+        const customers = getCustomers();
+        const found = customers.find(c => c.id === id);
+        if (found) {
+            customerData[id] = { name: found.name, phone: found.phone, history: [] };
+        } else {
+            return;
+        }
+    }
+
+    document.getElementById('bahi-ledger-name').innerText = customerData[id].name;
+    const history = customerData[id].history || [];
+    const list = document.getElementById('bahi-ledger-list');
+
+    if (history.length === 0) {
+        list.innerHTML = '<div class="list-item empty-state"><div class="item-info"><p>No entries yet.</p></div></div>';
+        document.getElementById('bahi-total-due').innerText = '₹0';
+        document.getElementById('bahi-total-paid').innerText = '₹0';
+        document.getElementById('bahi-balance').innerText = '₹0';
+        showView('view-bahi-ledger');
+        return;
+    }
+
+    let totalDue = 0, totalPaid = 0, runningBalance = 0;
+
+    // Sort by date ascending for ledger
+    const sorted = history.slice().sort((a, b) => new Date(a.date) - new Date(b.date));
+
+    const ledgerRows = sorted.map(entry => {
+        let debit = 0, credit = 0, desc = '';
+        if (entry.type === 'water') {
+            debit = entry.amount;
+            totalDue += entry.amount;
+            desc = 'Water: ' + entry.start + '-' + entry.end + ' (' + entry.duration + ' hrs)';
+        } else {
+            credit = entry.amount;
+            totalPaid += entry.amount;
+            desc = 'Payment: ' + (entry.note || 'Cash');
+        }
+        runningBalance = totalDue - totalPaid;
+
+        return '<div class="list-item" style="flex-direction: column; align-items: flex-start; gap: 4px;"><div style="display:flex; justify-content:space-between; width:100%;"><div class="item-info"><h4>' + desc + '</h4><p style="font-size:12px; color:var(--ios-gray);">' + entry.date + '</p></div><div style="text-align:right; min-width:80px;"><div style="font-size:13px; color:var(--ios-red);">' + (debit ? '₹' + debit : '') + '</div><div style="font-size:13px; color:var(--ios-green);">' + (credit ? '₹' + credit : '') + '</div></div></div><div style="width:100%; text-align:right; font-size:12px; color:var(--ios-gray); border-top:1px solid var(--ios-border); padding-top:4px;">Balance: <strong style="color:' + (runningBalance > 0 ? 'var(--ios-red)' : 'var(--ios-green)') + ';">₹' + runningBalance + '</strong></div></div>';
+    }).join('');
+
+    list.innerHTML = ledgerRows;
+    document.getElementById('bahi-total-due').innerText = '₹' + totalDue;
+    document.getElementById('bahi-total-paid').innerText = '₹' + totalPaid;
+    document.getElementById('bahi-balance').innerText = '₹' + runningBalance;
+    showView('view-bahi-ledger');
+};
+
 window.updateDashboardStats = function () {
     const history = getWaterHistory();
     const today = new Date().toISOString().split('T')[0];
@@ -646,6 +710,7 @@ window.startOwnerListeners = function () {
         saveCustomers(customers);
         loadCustomerData();
         renderCustomers();
+        renderBahiCustomers();
         populateCustomerDropdowns();
     });
 
@@ -826,6 +891,12 @@ const locales = {
         requestAcceptedMsg: "Owner accepted your request",
         requestRejectedMsg: "Owner rejected your request",
         sendRequest: "Send request",
+        ledger: "Ledger",
+        debit: "Debit",
+        credit: "Credit",
+        balance: "Balance",
+        totalDue: "Total Due",
+        totalPaid: "Total Paid",
     },
     hi: {
         appTitle: "अपना ट्यूबवेल",
@@ -897,6 +968,12 @@ const locales = {
         requestAcceptedMsg: "मालिक ने अनुरोध स्वीकार किया",
         requestRejectedMsg: "मालिक ने अनुरोध अस्वीकार किया",
         sendRequest: "अनुरोध भेजें",
+        ledger: "बही-खाता",
+        debit: "जमा",
+        credit: "नामे",
+        balance: "बाकी",
+        totalDue: "कुल बाकी",
+        totalPaid: "कुल जमा",
     }
 };
 
@@ -1441,6 +1518,7 @@ function setupOwnerUI() {
                 renderCustomers();
                 renderLinkRequests();
             }
+            if (targetId === 'view-bahi') renderBahiCustomers();
         });
     });
 
@@ -1474,6 +1552,7 @@ function setupOwnerUI() {
     renderPendingPayments();
     startOwnerListeners();
     renderLinkRequests();
+    renderBahiCustomers();
 }
 
 function setupCustomerUI() {

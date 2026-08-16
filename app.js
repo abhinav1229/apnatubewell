@@ -36,6 +36,302 @@ window.selectRole = function (role) {
     document.getElementById('role-customer').classList.toggle('active', role === 'customer');
 }
 
+/* --- DATA HELPERS --- */
+function getCustomers() { return JSON.parse(localStorage.getItem('customers') || '[]'); }
+function saveCustomers(arr) { localStorage.setItem('customers', JSON.stringify(arr)); }
+function getCustomerById(id) { return getCustomers().find(c => c.id === id); }
+function getQueue() { return JSON.parse(localStorage.getItem('water_queue') || '[]'); }
+function saveQueue(arr) { localStorage.setItem('water_queue', JSON.stringify(arr)); }
+function getTubewellData() { return JSON.parse(localStorage.getItem('tubewell_data') || '{}'); }
+function saveTubewellData(obj) { localStorage.setItem('tubewell_data', JSON.stringify(obj)); }
+function getWaterHistory() { return JSON.parse(localStorage.getItem('water_history') || '[]'); }
+function saveWaterHistory(arr) { localStorage.setItem('water_history', JSON.stringify(arr)); }
+
+function loadCustomerData() {
+    const customers = getCustomers();
+    const history = JSON.parse(localStorage.getItem('customer_history') || '{}');
+    customers.forEach(c => {
+        customerData[c.id] = { name: c.name, phone: c.phone, history: history[c.id] || [] };
+    });
+}
+
+function populateCustomerDropdowns() {
+    const customers = getCustomers();
+    const options = customers.map(c => `<option value="${c.id}">${c.name}</option>`).join('');
+    const startSelect = document.getElementById('start-water-customer');
+    if (startSelect) startSelect.innerHTML = '<option value="">-- ' + (currentLang === 'en' ? 'Select customer' : 'ग्राहक चुनें') + ' --</option>' + options;
+    const waterSelect = document.getElementById('water-customer');
+    const waterDisplay = document.getElementById('water-customer-display');
+    const waterOptions = document.getElementById('water-customer-options');
+    if (waterSelect && customers.length > 0) {
+        waterSelect.value = customers[0].id;
+        if (waterDisplay) waterDisplay.innerText = customers[0].name;
+        if (waterOptions) waterOptions.innerHTML = customers.map(c => `<div class="custom-option ${c.id === customers[0].id ? 'selected' : ''}" data-value="${c.id}" onclick="selectOption(this)">${c.name}</div>`).join('');
+    }
+}
+
+/* --- TUBEWELL STATUS --- */
+window.renderStatusCard = function () {
+    const tw = getTubewellData();
+    const status = tw.status || 'stopped';
+    const badge = document.getElementById('status-badge');
+    const occLine = document.getElementById('status-occupant-line');
+    const occName = document.getElementById('status-occupant-name');
+    const timeLine = document.getElementById('status-time-line');
+    const startTime = document.getElementById('status-start-time');
+    const btnStart = document.getElementById('btn-start-water');
+    const btnStop = document.getElementById('btn-stop-water');
+    const btnMaint = document.getElementById('btn-maintenance');
+    const btnExit = document.getElementById('btn-exit-maintenance');
+
+    if (!badge) return;
+    [btnStart, btnStop, btnMaint, btnExit].forEach(b => { if (b) b.style.display = 'none'; });
+    if (timeLine) timeLine.style.display = 'none';
+
+    badge.className = 'status-badge ' + status;
+    if (status === 'stopped') {
+        badge.innerText = locales[currentLang].statusStopped;
+        if (occLine) { occLine.style.display = 'block'; occLine.innerHTML = '<span data-i18n="notOccupied">' + locales[currentLang].notOccupied + '</span>'; }
+        if (btnStart) btnStart.style.display = 'block';
+        if (btnMaint) btnMaint.style.display = 'block';
+    } else if (status === 'running') {
+        badge.innerText = locales[currentLang].statusRunning;
+        const cust = tw.currentCustomer ? getCustomerById(tw.currentCustomer) : null;
+        if (occLine) { occLine.style.display = 'block'; occLine.innerHTML = '<span data-i18n="currentlyOccupiedBy">' + locales[currentLang].currentlyOccupiedBy + '</span>: <strong>' + (cust ? cust.name : '-') + '</strong>'; }
+        if (timeLine) { timeLine.style.display = 'block'; startTime.innerText = tw.currentStartTime || '-'; }
+        if (btnStop) btnStop.style.display = 'block';
+    } else if (status === 'work_in_progress') {
+        badge.innerText = locales[currentLang].statusWorkInProgress;
+        if (occLine) { occLine.style.display = 'block'; occLine.innerHTML = '<span data-i18n="maintenanceMode">' + locales[currentLang].maintenanceMode + '</span>'; }
+        if (btnExit) btnExit.style.display = 'block';
+    }
+}
+
+window.renderQueue = function () {
+    const queue = getQueue();
+    const container = document.getElementById('queue-list-container');
+    if (!container) return;
+    if (queue.length === 0) {
+        container.innerHTML = '<div class="list-item empty-state"><div class="item-info"><p data-i18n="noQueue">' + locales[currentLang].noQueue + '</p></div></div>';
+        return;
+    }
+    container.innerHTML = queue.map((entry, idx) => {
+        const cust = getCustomerById(entry.customerId);
+        return '<div class="list-item"><div style="display:flex; align-items:center; gap:12px;"><span class="queue-num">' + (idx + 1) + '</span><div class="item-info"><h4>' + (cust ? cust.name : 'Unknown') + '</h4><p>' + (cust ? cust.phone : '') + '</p></div></div><button class="btn-small" onclick="removeFromQueue(\'' + entry.customerId + '\')">' + locales[currentLang].removeFromQueue + '</button></div>';
+    }).join('');
+}
+
+window.addCustomerToQueue = function (customerId) {
+    const queue = getQueue();
+    if (queue.find(q => q.customerId === customerId)) {
+        showToast(currentLang === 'en' ? 'Already in queue' : 'पहले से कतार में है', 'info');
+        return;
+    }
+    queue.push({ customerId, addedAt: new Date().toISOString() });
+    saveQueue(queue);
+    renderQueue();
+    showToast(currentLang === 'en' ? 'Added to queue' : 'कतार में जोड़ दिया गया', 'success');
+}
+
+window.removeFromQueue = function (customerId) {
+    saveQueue(getQueue().filter(q => q.customerId !== customerId));
+    renderQueue();
+    showToast(currentLang === 'en' ? 'Removed from queue' : 'कतार से हटा दिया गया', 'success');
+}
+
+window.startWaterSession = function () {
+    const customerId = document.getElementById('start-water-customer').value;
+    if (!customerId) { showToast(currentLang === 'en' ? 'Select a customer' : 'ग्राहक चुनें', 'error'); return; }
+    const tw = getTubewellData();
+    if (tw.status === 'work_in_progress') { showToast(currentLang === 'en' ? 'Tubewell under maintenance' : 'ट्यूबवेल मरम्मत में है', 'error'); return; }
+    saveQueue(getQueue().filter(q => q.customerId !== customerId));
+    renderQueue();
+    tw.status = 'running';
+    tw.currentCustomer = customerId;
+    tw.currentStartTime = new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false });
+    saveTubewellData(tw);
+    renderStatusCard();
+    closeModal('start-water-modal');
+    showToast(currentLang === 'en' ? 'Water started' : 'पानी शुरू हो गया', 'success');
+}
+
+window.stopWaterSession = function () {
+    const tw = getTubewellData();
+    if (tw.status !== 'running' || !tw.currentCustomer) return;
+    const startTime = tw.currentStartTime;
+    const endTime = new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false });
+    const today = new Date().toISOString().split('T')[0];
+    const start = new Date(today + 'T' + startTime);
+    let end = new Date(today + 'T' + endTime);
+    if (end < start) end.setDate(end.getDate() + 1);
+    const duration = (end - start) / (1000 * 60 * 60);
+    const rate = tw.rate || 150;
+    const amount = Math.round(duration * rate);
+
+    const history = getWaterHistory();
+    history.push({ customerId: tw.currentCustomer, date: today, start: startTime, end: endTime, duration: parseFloat(duration.toFixed(2)), rate, amount, status: 'pending', type: 'water' });
+    saveWaterHistory(history);
+
+    const custHistory = JSON.parse(localStorage.getItem('customer_history') || '{}');
+    if (!custHistory[tw.currentCustomer]) custHistory[tw.currentCustomer] = [];
+    custHistory[tw.currentCustomer].push({ type: 'water', date: today, start: startTime, end: endTime, duration: parseFloat(duration.toFixed(2)), amount, status: 'pending' });
+    localStorage.setItem('customer_history', JSON.stringify(custHistory));
+
+    if (!customerData[tw.currentCustomer]) customerData[tw.currentCustomer] = { name: '', phone: '', history: [] };
+    customerData[tw.currentCustomer].history.push({ type: 'water', date: today, start: startTime, end: endTime, duration: parseFloat(duration.toFixed(2)), amount, status: 'pending' });
+
+    tw.status = 'stopped';
+    tw.currentCustomer = null;
+    tw.currentStartTime = null;
+    saveTubewellData(tw);
+    renderStatusCard();
+    updateDashboardStats();
+    renderPendingPayments();
+    showToast((currentLang === 'en' ? 'Stopped. Duration: ' : 'बंद. समय: ') + duration.toFixed(2) + (currentLang === 'en' ? ' hrs' : ' घंटे'), 'success');
+}
+
+window.setMaintenanceMode = function (active) {
+    const tw = getTubewellData();
+    if (active && tw.status === 'running') { showToast(currentLang === 'en' ? 'Stop water first' : 'पहले पानी बंद करें', 'error'); return; }
+    tw.status = active ? 'work_in_progress' : 'stopped';
+    if (active) { tw.currentCustomer = null; tw.currentStartTime = null; }
+    saveTubewellData(tw);
+    renderStatusCard();
+    showToast(currentLang === 'en' ? (active ? 'Maintenance mode on' : 'Maintenance mode off') : (active ? 'मरम्मत मोड चालू' : 'मरम्मत मोड बंद'), 'success');
+}
+
+/* --- CUSTOMER MANAGEMENT --- */
+window.addNewCustomer = function () {
+    const name = document.getElementById('new-customer-name').value.trim();
+    const phone = document.getElementById('new-customer-phone').value.trim();
+    const tubewellId = document.getElementById('new-customer-tubewell').value;
+    if (!name || !phone || phone.length !== 10) {
+        showToast(currentLang === 'en' ? 'Enter valid name and 10-digit phone' : 'सही नाम और 10 अंकों का फोन दर्ज करें', 'error');
+        return;
+    }
+    const customers = getCustomers();
+    if (customers.find(c => c.phone === phone)) {
+        showToast(currentLang === 'en' ? 'Customer already exists' : 'ग्राहक पहले से मौजूद है', 'error');
+        return;
+    }
+    const id = 'cust_' + Date.now();
+    customers.push({ id, name, phone, tubewellId, linkedAt: new Date().toISOString() });
+    saveCustomers(customers);
+    customerData[id] = { name, phone, history: [] };
+    populateCustomerDropdowns();
+    renderCustomers();
+    closeModal('add-customer-modal');
+    document.getElementById('new-customer-name').value = '';
+    document.getElementById('new-customer-phone').value = '';
+    showToast(currentLang === 'en' ? 'Customer added!' : 'ग्राहक जोड़ दिया गया!', 'success');
+}
+
+window.renderCustomers = function () {
+    const customers = getCustomers();
+    const list = document.getElementById('customers-list');
+    if (!list) return;
+    if (customers.length === 0) {
+        list.innerHTML = '<div class="list-item empty-state"><div class="item-info"><p data-i18n="noCustomers">' + locales[currentLang].noCustomers + '</p></div></div>';
+        return;
+    }
+    list.innerHTML = customers.map(c => '<div class="list-item" onclick="openCustomerDetail(\'' + c.id + '\')"><div class="item-info"><h4>' + c.name + '</h4><p>' + c.phone + '</p></div><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--ios-gray)" stroke-width="2"><polyline points="9 18 15 12 9 6"></polyline></svg></div>').join('');
+}
+
+window.updateDashboardStats = function () {
+    const history = getWaterHistory();
+    const today = new Date().toISOString().split('T')[0];
+    let hours = 0, revenue = 0, received = 0, pending = 0;
+    history.forEach(e => {
+        if (e.date === today && e.type === 'water') {
+            hours += e.duration || 0;
+            revenue += e.amount || 0;
+            if (e.status === 'paid') received += e.amount;
+            else if (e.status === 'pending') pending += e.amount;
+        }
+    });
+    const hrsEl = document.getElementById('stat-hours');
+    if (hrsEl) hrsEl.innerHTML = hours.toFixed(1) + ' <small data-i18n="hrs">' + locales[currentLang].hrs + '</small>';
+    const revEl = document.getElementById('stat-revenue');
+    if (revEl) revEl.innerText = '₹' + revenue;
+    const recEl = document.getElementById('stat-received');
+    if (recEl) recEl.innerText = '₹' + received;
+    const penEl = document.getElementById('stat-pending');
+    if (penEl) penEl.innerText = '₹' + pending;
+}
+
+window.renderPendingPayments = function () {
+    const history = getWaterHistory();
+    const pending = history.filter(h => h.status === 'pending' && h.type === 'water');
+    const list = document.getElementById('pending-payments-list');
+    if (!list) return;
+    if (pending.length === 0) {
+        list.innerHTML = '<div class="list-item empty-state"><div class="item-info"><p data-i18n="noPendingPayments">' + locales[currentLang].noPendingPayments + '</p></div></div>';
+        return;
+    }
+    const byCustomer = {};
+    pending.forEach(e => { if (!byCustomer[e.customerId]) byCustomer[e.customerId] = 0; byCustomer[e.customerId] += e.amount; });
+    list.innerHTML = Object.entries(byCustomer).map(([cid, amt]) => {
+        const c = getCustomerById(cid);
+        return '<div class="list-item"><div class="item-info"><h4>' + (c ? c.name : 'Unknown') + '</h4><p>' + (c ? c.phone : '') + '</p></div><div class="item-value text-red">₹' + amt + '</div></div>';
+    }).join('');
+}
+
+/* --- CUSTOMER ROLE: LINK TO TUBEWELL --- */
+window.renderCustomerLinkedTubewell = function () {
+    const link = JSON.parse(localStorage.getItem('customer_link') || 'null');
+    const infoDiv = document.getElementById('customer-linked-tubewell-info');
+    const formDiv = document.getElementById('link-tubewell-form');
+    if (!infoDiv) return;
+    if (link) {
+        const ownerInfo = JSON.parse(localStorage.getItem('owner_info') || '{}');
+        const twData = JSON.parse(localStorage.getItem('tubewell_data') || '{}');
+        infoDiv.innerHTML = '<div class="list-item" style="padding:0;"><div class="item-info"><h4>' + (twData.name || 'Tubewell') + '</h4><p>' + (ownerInfo.name || 'Owner') + ' • ' + (twData.location || '') + '</p><p style="margin-top:4px;">Rate: ₹' + (twData.rate || 150) + '/hr</p></div></div><button class="btn-ghost mt-2" onclick="unlinkTubewell()" style="width:100%; color:var(--ios-red);">' + locales[currentLang].unlink + '</button>';
+        if (formDiv) formDiv.style.display = 'none';
+        const linkedName = document.getElementById('linked-tubewell-name');
+        if (linkedName) linkedName.innerText = twData.name || 'Tubewell';
+    } else {
+        infoDiv.innerHTML = '<p style="color: var(--ios-gray); font-size: 14px;">' + (currentLang === 'en' ? 'No tubewell linked' : 'कोई ट्यूबवेल लिंक नहीं') + '</p>';
+        if (formDiv) formDiv.style.display = 'block';
+    }
+}
+
+window.linkToOwnerTubewell = function () {
+    const phone = document.getElementById('link-owner-phone').value.trim();
+    if (phone.length !== 10) { showToast(currentLang === 'en' ? 'Enter valid 10-digit phone' : 'सही 10 अंकों का फोन दर्ज करें', 'error'); return; }
+    const ownerInfo = JSON.parse(localStorage.getItem('owner_info') || '{}');
+    const allUserInfo = JSON.parse(localStorage.getItem('user_info') || '{}');
+    if (ownerInfo.phone === phone || allUserInfo.phone === phone) {
+        const twData = JSON.parse(localStorage.getItem('tubewell_data') || '{}');
+        localStorage.setItem('customer_link', JSON.stringify({ ownerPhone: phone, tubewellId: 'primary', linkedAt: new Date().toISOString() }));
+        renderCustomerLinkedTubewell();
+        showToast(currentLang === 'en' ? 'Linked successfully!' : 'सफलतापूर्वक जुड़ गया!', 'success');
+    } else {
+        showToast(currentLang === 'en' ? 'Owner not found. Ask owner to add you first.' : 'मालिक नहीं मिला। मालिक से कहें कि वह आपको जोड़े।', 'error');
+    }
+}
+
+window.unlinkTubewell = function () {
+    localStorage.removeItem('customer_link');
+    renderCustomerLinkedTubewell();
+    showToast(currentLang === 'en' ? 'Unlinked' : 'हटा दिया गया', 'info');
+}
+
+window.renderCustomerQueuePosition = function () {
+    const queue = getQueue();
+    const posEl = document.getElementById('cust-queue-position');
+    if (!posEl) return;
+    const link = JSON.parse(localStorage.getItem('customer_link') || 'null');
+    if (!link) { posEl.innerText = '-'; return; }
+    const userPhone = localStorage.getItem('user_phone');
+    const idx = queue.findIndex(q => {
+        const c = getCustomerById(q.customerId);
+        return c && c.phone === userPhone;
+    });
+    if (idx === -1) { posEl.innerText = '-'; return; }
+    if (idx === 0) { posEl.innerHTML = '<span style="color:var(--ios-green); font-size:13px;">' + locales[currentLang].youAreNext + '</span>'; return; }
+    posEl.innerText = '#' + (idx + 1);
+}
+
 /* --- TOAST NOTIFICATIONS --- */
 window.showToast = function (message, type = 'info') {
     const container = document.getElementById('toast-container');
@@ -87,7 +383,6 @@ const locales = {
         saveChanges: "Save Changes", cancel: "Cancel", name: "Name", businessName: "Business Name",
         bahiSubtitle: "Select a customer to view their complete ledger.",
         myTubewells: "My Tubewells",
-        add: "Add",
         noTubewells: "No tubewells added yet.",
         tubewellName: "Tubewell Name",
         location: "Location / Village",
@@ -95,6 +390,32 @@ const locales = {
         addTubewell: "Add New Tubewell",
         addTubewellBtn: "Add Tubewell",
         villageLocation: "Village / Location",
+        tubewellStatus: "Tubewell status",
+        statusRunning: "Running",
+        statusStopped: "Stopped",
+        statusWorkInProgress: "Work in progress",
+        currentlyOccupiedBy: "Currently occupied by",
+        notOccupied: "Not occupied",
+        customerQueue: "Customer queue",
+        addToQueue: "Add to queue",
+        removeFromQueue: "Remove",
+        noQueue: "No customers in queue",
+        startWater: "Start water",
+        stopWater: "Stop water",
+        maintenanceMode: "Maintenance mode",
+        exitMaintenance: "Exit maintenance",
+        nextInQueue: "Next in queue",
+        addCustomer: "Add customer",
+        customerPhone: "Customer phone",
+        customerName: "Customer name",
+        selectTubewell: "Select tubewell",
+        unlink: "Unlink",
+        startedAt: "Started at",
+        youAreNext: "You are next!",
+        myQueuePosition: "My queue position",
+        totalCustomers: "Total customers",
+        waterRunningFor: "Water running for",
+        add: "Add",
     },
     hi: {
         appTitle: "अपना ट्यूबवेल",
@@ -119,7 +440,6 @@ const locales = {
         businessName: "व्यवसाय का नाम",
         bahiSubtitle: "पूरी बही-खाता देखने के लिए ग्राहक चुनें।",
         myTubewells: "मेरे ट्यूबवेल",
-        add: "जोड़ें",
         noTubewells: "अभी तक कोई ट्यूबवेल नहीं जोड़ा गया।",
         tubewellName: "ट्यूबवेल का नाम",
         location: "गांव / स्थान",
@@ -127,6 +447,32 @@ const locales = {
         addTubewell: "नया ट्यूबवेल जोड़ें",
         addTubewellBtn: "ट्यूबवेल जोड़ें",
         villageLocation: "गांव / स्थान",
+        tubewellStatus: "ट्यूबवेल स्थिति",
+        statusRunning: "चालू",
+        statusStopped: "बंद",
+        statusWorkInProgress: "काम जारी",
+        currentlyOccupiedBy: "वर्तमान में उपयोगकर्ता",
+        notOccupied: "खाली",
+        customerQueue: "ग्राहक कतार",
+        addToQueue: "कतार में जोड़ें",
+        removeFromQueue: "हटाएं",
+        noQueue: "कोई कतार नहीं",
+        startWater: "पानी शुरू करें",
+        stopWater: "पानी बंद करें",
+        maintenanceMode: "मरम्मत मोड",
+        exitMaintenance: "मरम्मत समाप्त",
+        nextInQueue: "कतार में अगला",
+        addCustomer: "ग्राहक जोड़ें",
+        customerPhone: "ग्राहक का फोन",
+        customerName: "ग्राहक का नाम",
+        selectTubewell: "ट्यूबवेल चुनें",
+        unlink: "हटाएं",
+        startedAt: "शुरू हुआ",
+        youAreNext: "आप अगले हैं!",
+        myQueuePosition: "मेरी कतार में स्थिति",
+        totalCustomers: "कुल ग्राहक",
+        waterRunningFor: "पानी चालू है",
+        add: "जोड़ें",
     }
 };
 
@@ -331,17 +677,36 @@ document.getElementById('save-water-btn').addEventListener('click', async () => 
     try {
         const amountString = calcTotal.innerText.replace('₹', '');
         const amount = parseFloat(amountString);
+        const customerId = document.getElementById('water-customer').value;
+        const duration = parseFloat(calcDuration.innerText);
+        const today = new Date().toISOString().split('T')[0];
         const payload = {
             business_id: "demo_owner_123",
-            customer_id: document.getElementById('water-customer').value,
+            customer_id: customerId,
             start_time: timeStart.value,
             end_time: timeEnd.value,
-            duration: parseFloat(calcDuration.innerText),
+            duration: duration,
             rate: getRate(),
             amount: amount,
             created_at: serverTimestamp()
         };
         await addDoc(collection(db, "water_usage"), payload);
+
+        // Save to localStorage for dashboard
+        const history = getWaterHistory();
+        history.push({ customerId, date: today, start: timeStart.value, end: timeEnd.value, duration, rate: getRate(), amount, status: 'pending', type: 'water' });
+        saveWaterHistory(history);
+
+        const custHistory = JSON.parse(localStorage.getItem('customer_history') || '{}');
+        if (!custHistory[customerId]) custHistory[customerId] = [];
+        custHistory[customerId].push({ type: 'water', date: today, start: timeStart.value, end: timeEnd.value, duration, amount, status: 'pending' });
+        localStorage.setItem('customer_history', JSON.stringify(custHistory));
+
+        if (!customerData[customerId]) customerData[customerId] = { name: '', phone: '', history: [] };
+        customerData[customerId].history.push({ type: 'water', date: today, start: timeStart.value, end: timeEnd.value, duration, amount, status: 'pending' });
+
+        updateDashboardStats();
+        renderPendingPayments();
         showToast(currentLang === 'en' ? "Record Saved!" : "हिसाब सेव हो गया!", "success");
         closeModal('water-modal');
     } catch (e) {
@@ -356,20 +721,24 @@ document.getElementById('save-water-btn').addEventListener('click', async () => 
 /* --- TUBEWELL MANAGEMENT --- */
 function renderTubewells() {
     const list = document.getElementById('tubewells-list');
-    const primary = JSON.parse(localStorage.getItem('tubewell_data') || '{}');
+    const primary = getTubewellData();
     const extras = JSON.parse(localStorage.getItem('tubewell_extras') || '[]');
     const all = primary.name ? [primary, ...extras] : extras;
-    list.innerHTML = all.map((tw, i) => `
-        <div class="list-item">
-            <div class="item-info">
-                <h4>${tw.name}</h4>
-                <p>${tw.location} • ₹${tw.rate}/hr</p>
-            </div>
-            <span class="role-badge" style="${i === 0 ? '' : 'background: rgba(52,199,89,0.1); color: var(--ios-green);'}">${i === 0 ? 'PRIMARY' : 'ACTIVE'}</span>
-        </div>
-    `).join('');
+
+    // Update tubewell select in add-customer modal
+    const twSelect = document.getElementById('new-customer-tubewell');
+    if (twSelect) {
+        twSelect.innerHTML = all.map((tw, i) => '<option value="' + (i === 0 ? 'primary' : 'extra_' + i) + '">' + tw.name + '</option>').join('');
+    }
+
+    list.innerHTML = all.map((tw, i) => {
+        const statusText = tw.status === 'running' ? '● ' + locales[currentLang].statusRunning : tw.status === 'work_in_progress' ? '● ' + locales[currentLang].statusWorkInProgress : '● ' + locales[currentLang].statusStopped;
+        const statusColor = tw.status === 'running' ? 'var(--ios-green)' : tw.status === 'work_in_progress' ? '#FF9500' : 'var(--ios-gray)';
+        return '<div class="list-item"><div class="item-info"><h4>' + tw.name + '</h4><p>' + tw.location + ' • ₹' + tw.rate + '/hr</p><p style="font-size:12px; color:' + statusColor + '; margin-top:2px;">' + statusText + '</p></div><span class="role-badge" style="' + (i === 0 ? '' : 'background: rgba(52,199,89,0.1); color: var(--ios-green);') + '">' + (i === 0 ? 'PRIMARY' : 'ACTIVE') + '</span></div>';
+    }).join('');
+
     if (all.length === 0) {
-        list.innerHTML = `<div class="list-item"><div class="item-info"><p style="color: var(--ios-gray);">${locales[currentLang].noTubewells}</p></div></div>`;
+        list.innerHTML = '<div class="list-item"><div class="item-info"><p style="color: var(--ios-gray);">' + locales[currentLang].noTubewells + '</p></div></div>';
     }
 }
 
@@ -401,49 +770,44 @@ const customerData = {
 window.openCustomerDetail = function (id) {
     currentCustomerId = id;
     const cust = customerData[id];
-    if (!cust) return;
+    if (!cust) {
+        // Try loading from localStorage
+        const customers = getCustomers();
+        const found = customers.find(c => c.id === id);
+        if (found) {
+            customerData[id] = { name: found.name, phone: found.phone, history: [] };
+        } else {
+            return;
+        }
+    }
     const historyList = document.getElementById('customer-history-list');
-    if (!cust.history || cust.history.length === 0) {
+    const allHistory = customerData[id].history || [];
+    document.getElementById('customer-detail-name').innerText = customerData[id].name;
+
+    if (allHistory.length === 0) {
         historyList.innerHTML = '<div class="list-item"><div class="item-info"><p style="color: var(--ios-gray);">No entries yet.</p></div></div>';
         document.getElementById('cust-total-due').innerText = '₹0';
         document.getElementById('cust-total-paid').innerText = '₹0';
-        document.getElementById('cust-total-hours').innerHTML = totalHours.toFixed(1) + ` <small>${locales[currentLang].hrs}</small>`;
+        document.getElementById('cust-total-hours').innerHTML = '0 <small>Hrs</small>';
         document.getElementById('cust-last-entry').innerText = '-';
+        showView('view-customer-detail');
         return;
     }
-    document.getElementById('customer-detail-name').innerText = cust.name;
+
     let totalDue = 0, totalPaid = 0, totalHours = 0, lastEntry = '-';
-    historyList.innerHTML = cust.history.slice().reverse().map((entry, idx) => {
+    historyList.innerHTML = allHistory.slice().reverse().map((entry, idx) => {
         if (entry.type === 'water') {
             if (entry.status === 'pending') totalDue += entry.amount;
             totalHours += entry.duration;
             if (idx === 0) lastEntry = entry.date;
-            return `
-                <div class="list-item">
-                    <div class="item-info">
-                        <h4>Water Usage</h4>
-                        <p>${entry.date} • ${entry.start} - ${entry.end} • ${entry.duration} hrs</p>
-                    </div>
-                    <div style="text-align: right;">
-                        <div class="item-value ${entry.status === 'pending' ? 'text-red' : 'text-green'}">₹${entry.amount}</div>
-                        <span style="font-size: 11px; color: var(--ios-gray); text-transform: uppercase;">${entry.status}</span>
-                    </div>
-                </div>
-            `;
+            return '<div class="list-item"><div class="item-info"><h4>Water Usage</h4><p>' + entry.date + ' • ' + entry.start + ' - ' + entry.end + ' • ' + entry.duration + ' hrs</p></div><div style="text-align: right;"><div class="item-value ' + (entry.status === 'pending' ? 'text-red' : 'text-green') + '">₹' + entry.amount + '</div><span style="font-size: 11px; color: var(--ios-gray); text-transform: uppercase;">' + entry.status + '</span></div></div>';
         } else {
             totalPaid += entry.amount;
             if (idx === 0) lastEntry = entry.date;
-            return `
-                <div class="list-item">
-                    <div class="item-info">
-                        <h4>Payment</h4>
-                        <p>${entry.date} • ${entry.note || 'Cash'}</p>
-                    </div>
-                    <div class="item-value text-green">-₹${entry.amount}</div>
-                </div>
-            `;
+            return '<div class="list-item"><div class="item-info"><h4>Payment</h4><p>' + entry.date + ' • ' + (entry.note || 'Cash') + '</p></div><div class="item-value text-green">-₹' + entry.amount + '</div></div>';
         }
     }).join('');
+
     document.getElementById('cust-total-due').innerText = '₹' + totalDue;
     document.getElementById('cust-total-paid').innerText = '₹' + totalPaid;
     document.getElementById('cust-total-hours').innerHTML = totalHours.toFixed(1) + ' <small>Hrs</small>';
@@ -467,14 +831,22 @@ window.savePayment = function () {
         return;
     }
     if (!customerData[currentCustomerId]) return;
+
     customerData[currentCustomerId].history.push({ type: 'payment', date, amount, note: note || 'Cash' });
+
+    const custHistory = JSON.parse(localStorage.getItem('customer_history') || '{}');
+    if (!custHistory[currentCustomerId]) custHistory[currentCustomerId] = [];
+    custHistory[currentCustomerId].push({ type: 'payment', date, amount, note: note || 'Cash' });
+    localStorage.setItem('customer_history', JSON.stringify(custHistory));
+
     document.getElementById('payment-amount').value = '';
     document.getElementById('payment-note').value = '';
     closeModal('payment-modal');
     openCustomerDetail(currentCustomerId);
+    updateDashboardStats();
+    renderPendingPayments();
     showToast(currentLang === 'en' ? "Payment Saved!" : "भुगतान सेव हो गया!", "success");
 }
-
 // Set default payment date
 document.getElementById('payment-date').value = new Date().toISOString().split('T')[0];
 window.toggleCustomSelect = function () {
@@ -589,6 +961,7 @@ function setupOwnerUI() {
             if (target) target.classList.add('active');
             window.scrollTo({ top: 0, behavior: 'smooth' });
             if (targetId === 'view-tubewells') renderTubewells();
+            if (targetId === 'view-customers') renderCustomers();
         });
     });
 
@@ -612,6 +985,14 @@ function setupOwnerUI() {
     document.getElementById('role-badge-text').innerText = currentLang === 'en' ? 'Owner Account' : 'मालिक खाता';
     document.getElementById('role-badge-text').style.background = 'rgba(0,122,255,0.1)';
     document.getElementById('role-badge-text').style.color = 'var(--ios-blue)';
+
+    loadCustomerData();
+    populateCustomerDropdowns();
+    renderCustomers();
+    renderStatusCard();
+    renderQueue();
+    updateDashboardStats();
+    renderPendingPayments();
 }
 
 function setupCustomerUI() {
@@ -681,7 +1062,11 @@ function setupCustomerUI() {
     document.getElementById('role-badge-text').innerText = currentLang === 'en' ? 'Customer' : 'ग्राहक';
     document.getElementById('role-badge-text').style.background = 'rgba(52,199,89,0.1)';
     document.getElementById('role-badge-text').style.color = 'var(--ios-green)';
+    renderCustomerLinkedTubewell();
+    renderCustomerQueuePosition();
 }
+
+
 window.becomeOwner = function () {
     if (!confirm(currentLang === 'en' ? "Switch to owner mode? Your customer data will be preserved." : "मालिक मोड में स्विच करें? आपका ग्राहक डेटा सुरक्षित रहेगा।")) {
         return;
@@ -767,3 +1152,7 @@ if (savedUser) {
     document.querySelector('.greeting').innerText = (currentLang === 'en' ? 'Namaste, ' : 'नमस्ते, ') + data.name;
     document.getElementById('edit-profile-name').value = data.name;
 }
+
+// Initialize data
+loadCustomerData();
+populateCustomerDropdowns();

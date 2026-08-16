@@ -1,0 +1,513 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Apna Tubewell</title>
+
+    <!-- Hindi Font: Tiro Devanagari Hindi -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Tiro+Devanagari+Hindi:ital@0;1&display=swap" rel="stylesheet">
+
+    <link rel="stylesheet" href="style.css">
+    <link rel="manifest" href="manifest.json">
+</head>
+
+<body>
+
+    <!-- Toast Notification Container -->
+    <div id="toast-container" class="toast-container"></div>
+
+    <!-- Language Toggle (Hidden on Login) -->
+    <div class="lang-toggle" id="global-lang-toggle" style="display: none;">
+        <button id="btn-en" class="active">EN</button>
+        <button id="btn-hi">हिंदी</button>
+    </div>
+
+    <!-- LOGIN SCREEN -->
+    <section id="login-screen" class="screen active">
+        <div class="login-container">
+            <!-- Language toggle for login screen specifically -->
+            <div class="login-lang-toggle">
+                <span id="login-en" class="active">English</span> | <span id="login-hi">हिंदी</span>
+            </div>
+
+            <div class="logo-box">
+                <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="var(--sys-blue)" stroke-width="2"
+                    stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6" />
+                </svg>
+            </div>
+            <h1 data-i18n="appTitle">Apna Tubewell</h1>
+            <p class="subtitle" data-i18n="appSubtitle">Khet ke paani ka poora hisab, ab mobile par.</p>
+
+            <div id="phone-auth-section">
+                <div class="form-group mt-4">
+                    <label data-i18n="mobileNumber">Mobile Number</label>
+                    <div style="display: flex; gap: 10px;">
+                        <input type="text" value="+91" disabled
+                            style="width: 60px; text-align: center; background: var(--sys-bg); color: var(--sys-text-secondary);">
+                        <input type="tel" id="login-phone" placeholder="9876543210" maxlength="10">
+                    </div>
+                </div>
+                <button class="btn-primary full-width mt-2 interaction-active" id="send-otp-btn" data-i18n="login">Send
+                    OTP</button>
+            </div>
+
+            <div id="otp-verify-section" style="display: none;">
+                <div class="form-group mt-4">
+                    <label data-i18n="enterOtp">Enter OTP</label>
+                    <input type="number" id="otp-input" placeholder="123456" maxlength="6">
+                </div>
+                <button class="btn-primary full-width mt-2 interaction-active" id="verify-otp-btn"
+                    data-i18n="verifyLogin">Verify & Login</button>
+            </div>
+            <div id="recaptcha-container"></div>
+        </div>
+    </section>
+
+    <!-- BASIC INFO SCREEN (After Login) -->
+    <section id="basic-info-screen" class="screen">
+        <div class="login-container">
+            <div class="logo-box">
+                <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="var(--sys-blue)" stroke-width="2"
+                    stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" />
+                    <circle cx="12" cy="7" r="4" />
+                </svg>
+            </div>
+            <h1 data-i18n="completeProfile">Complete Your Profile</h1>
+            <p class="subtitle">Tell us a bit about yourself.</p>
+
+            <div class="form-group mt-4">
+                <label>Your Name</label>
+                <input type="text" id="owner-name" placeholder="e.g. Ram Singh">
+            </div>
+            <div class="form-group">
+                <label>Village / Location</label>
+                <input type="text" id="owner-village" placeholder="e.g. Village XYZ">
+            </div>
+            <button class="btn-primary full-width mt-2 interaction-active" id="save-basic-info-btn">Continue to
+                App</button>
+        </div>
+    </section>
+
+    <!-- MAIN APP SHELL (Hidden until login) -->
+    <div id="app-shell" style="display: none;">
+
+        <!-- Header -->
+        <header class="app-header">
+            <div>
+                <span class="role-badge" data-i18n="ownerAccount">Owner Account</span>
+                <h2 class="greeting" data-i18n="greeting">Namaste, Ram Bhai 👋</h2>
+                <p class="date-display">16 Aug 2026</p>
+            </div>
+            <div class="profile-icon interaction-active" onclick="openModal('profile-modal')">
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" />
+                    <circle cx="12" cy="7" r="4" />
+                </svg>
+            </div>
+        </header>
+
+        <!-- DASHBOARD VIEW -->
+        <main id="view-home" class="main-view active pb-nav">
+            <h3 class="section-title" data-i18n="todaySummary">Today's Summary</h3>
+
+            <div class="stats-grid">
+                <div class="stat-card">
+                    <span class="stat-label" data-i18n="waterUsed">Water Used</span>
+                    <span class="stat-value text-blue" id="stat-hours">12.5 <small>Hrs</small></span>
+                </div>
+                <div class="stat-card">
+                    <span class="stat-label" data-i18n="revenue">Revenue</span>
+                    <span class="stat-value text-green" id="stat-revenue">₹2,500</span>
+                </div>
+                <div class="stat-card">
+                    <span class="stat-label" data-i18n="received">Received</span>
+                    <span class="stat-value" id="stat-received">₹1,800</span>
+                </div>
+                <div class="stat-card outline-red">
+                    <span class="stat-label" data-i18n="pending">Pending</span>
+                    <span class="stat-value text-red" id="stat-pending">₹700</span>
+                </div>
+            </div>
+
+            <h3 class="section-title mt-4" data-i18n="quickActions">Quick Actions</h3>
+            <div class="action-buttons">
+                <button class="btn-action primary-action interaction-active" onclick="openModal('water-modal')">
+                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <line x1="12" y1="5" x2="12" y2="19" />
+                        <line x1="5" y1="12" x2="19" y2="12" />
+                    </svg>
+                    <span data-i18n="paaniHisab">Paani Ka Hisab</span>
+                </button>
+                <button class="btn-action secondary-action interaction-active"
+                    onclick="showToast('Payment feature coming soon!', 'info')">
+                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <line x1="12" y1="5" x2="12" y2="19" />
+                        <line x1="5" y1="12" x2="19" y2="12" />
+                    </svg>
+                    <span data-i18n="payment">Payment</span>
+                </button>
+            </div>
+
+            <h3 class="section-title mt-4" data-i18n="pendingPayments">Pending Payments</h3>
+            <div class="list-card">
+                <div class="list-item interaction-active">
+                    <div class="item-info">
+                        <h4>Ram Lal</h4>
+                        <p>Village XYZ</p>
+                    </div>
+                    <div class="item-value text-red">₹1,175</div>
+                </div>
+                <div class="list-item interaction-active">
+                    <div class="item-info">
+                        <h4>Shyam</h4>
+                        <p>Village ABC</p>
+                    </div>
+                    <div class="item-value text-red">₹650</div>
+                </div>
+            </div>
+        </main>
+
+        <!-- CUSTOMERS VIEW -->
+        <main id="view-customers" class="main-view pb-nav">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
+                <h3 class="section-title mb-0" data-i18n="navCustomers">Customers</h3>
+                <button class="btn-small interaction-active" onclick="showToast('Add Customer coming soon', 'info')">+
+                    Add</button>
+            </div>
+
+            <div class="form-group">
+                <input type="text" placeholder="Search customer..." id="search-customer"
+                    style="border-radius: 20px; padding-left: 16px;">
+            </div>
+
+            <div class="list-card mt-2" id="customers-list">
+                <div class="list-item interaction-active" onclick="openCustomerDetail('1')">
+                    <div class="item-info">
+                        <h4>Ram Lal</h4>
+                        <p>+91 9876543210 • Village XYZ</p>
+                    </div>
+                    <div style="text-align: right;">
+                        <div class="item-value text-red">₹1,175 Due</div>
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="var(--sys-gray)">
+                            <polyline points="9 18 15 12 9 6"></polyline>
+                        </svg>
+                    </div>
+                </div>
+                <div class="list-item interaction-active" onclick="openCustomerDetail('2')">
+                    <div class="item-info">
+                        <h4>Shyam</h4>
+                        <p>+91 9998887776 • Village ABC</p>
+                    </div>
+                    <div style="text-align: right;">
+                        <div class="item-value text-red">₹650 Due</div>
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="var(--sys-gray)">
+                            <polyline points="9 18 15 12 9 6"></polyline>
+                        </svg>
+                    </div>
+                </div>
+            </div>
+        </main>
+
+        <!-- BAHI KHATA VIEW -->
+        <main id="view-bahi" class="main-view pb-nav">
+            <h3 class="section-title" data-i18n="navBahi">Digital Bahi-Khata</h3>
+            <p style="color: var(--sys-gray); font-size: 14px; margin-bottom: 16px;">Select a customer to view their
+                complete ledger.</p>
+
+            <div class="list-card">
+                <div class="list-item interaction-active">
+                    <div class="item-info">
+                        <h4>Ram Lal</h4>
+                        <p>Last entry: Today</p>
+                    </div>
+                    <div class="item-value text-red">₹1,175 Due</div>
+                </div>
+            </div>
+        </main>
+
+        <!-- TUBEWELLS VIEW -->
+        <main id="view-tubewells" class="main-view pb-nav">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
+                <h3 class="section-title mb-0">My Tubewells</h3>
+                <button class="btn-small interaction-active" onclick="openModal('add-tubewell-modal')">+ Add</button>
+            </div>
+
+            <div id="tubewells-list" class="list-card">
+                <!-- Populated by JS -->
+            </div>
+        </main>
+
+        <!-- CUSTOMER DETAIL VIEW -->
+        <main id="view-customer-detail" class="main-view pb-nav">
+            <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 16px;">
+                <button class="close-btn interaction-active" onclick="showView('view-customers')"
+                    style="position: static;">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <polyline points="15 18 9 12 15 6"></polyline>
+                    </svg>
+                </button>
+                <h3 class="section-title mb-0" id="customer-detail-name">Customer Name</h3>
+            </div>
+
+            <div class="stats-grid" style="margin-bottom: 16px;">
+                <div class="stat-card">
+                    <span class="stat-label">Total Due</span>
+                    <span class="stat-value text-red" id="cust-total-due">₹0</span>
+                </div>
+                <div class="stat-card">
+                    <span class="stat-label">Total Paid</span>
+                    <span class="stat-value text-green" id="cust-total-paid">₹0</span>
+                </div>
+                <div class="stat-card">
+                    <span class="stat-label">Total Hours</span>
+                    <span class="stat-value text-blue" id="cust-total-hours">0 <small>Hrs</small></span>
+                </div>
+                <div class="stat-card">
+                    <span class="stat-label">Last Entry</span>
+                    <span class="stat-value" id="cust-last-entry" style="font-size: 14px;">-</span>
+                </div>
+            </div>
+
+            <div style="display: flex; gap: 10px; margin-bottom: 16px;">
+                <button class="btn-primary full-width interaction-active" style="padding: 12px;"
+                    onclick="openModal('payment-modal')">+ Add Payment</button>
+                <button class="btn-action secondary-action interaction-active" style="padding: 12px; flex: 1;"
+                    onclick="openModal('water-modal'); document.getElementById('water-customer').value = currentCustomerId;">+
+                    Water Entry</button>
+            </div>
+
+            <h3 class="section-title">History</h3>
+            <div id="customer-history-list" class="list-card">
+                <!-- Populated by JS -->
+            </div>
+        </main>
+
+        <!-- BOTTOM NAVIGATION -->
+        <nav class="bottom-nav">
+            <a href="#" class="nav-item active interaction-active" data-target="view-home">
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
+                    <polyline points="9 22 9 12 15 12 15 22" />
+                </svg>
+                <span data-i18n="navHome">Home</span>
+            </a>
+            <a href="#" class="nav-item interaction-active" data-target="view-customers">
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" />
+                    <circle cx="9" cy="7" r="4" />
+                    <path d="M23 21v-2a4 4 0 0 0-3-3.87" />
+                    <path d="M16 3.13a4 4 0 0 1 0 7.75" />
+                </svg>
+                <span data-i18n="navCustomers">Customers</span>
+            </a>
+            <a href="#" class="nav-item interaction-active" data-target="view-bahi">
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" />
+                    <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z" />
+                </svg>
+                <span data-i18n="navBahi">Bahi</span>
+            </a>
+            <a href="#" class="nav-item interaction-active" data-target="view-tubewells">
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6" />
+                </svg>
+                <span>Tubewells</span>
+            </a>
+        </nav>
+    </div>
+
+    <!-- PROFILE MODAL -->
+    <div id="profile-modal" class="modal-overlay">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>My Profile</h3>
+                <button class="close-btn interaction-active" onclick="closeModal('profile-modal')">
+                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <line x1="18" y1="6" x2="6" y2="18" />
+                        <line x1="6" y1="6" x2="18" y2="18" />
+                    </svg>
+                </button>
+            </div>
+            <div class="modal-body">
+                <div style="text-align: center; margin-bottom: 24px;">
+                    <div class="profile-icon" style="width: 64px; height: 64px; margin: 0 auto 12px; font-size: 24px;">
+                        <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                            stroke-width="2">
+                            <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" />
+                            <circle cx="12" cy="7" r="4" />
+                        </svg>
+                    </div>
+                    <div id="profile-view-mode">
+                        <h4 id="profile-name-display">Ram Bhai</h4>
+                        <p style="color: var(--sys-gray); font-size: 14px;" id="profile-business-display">Ram Singh
+                            Tubewell</p>
+                        <span class="role-badge mt-2" style="display: inline-block;">Owner</span>
+                        <button class="btn-small mt-2 interaction-active" onclick="toggleProfileEdit(true)">Edit
+                            Profile</button>
+                    </div>
+                    <div id="profile-edit-mode" style="display: none;">
+                        <div class="form-group" style="text-align: left;">
+                            <label>Name</label>
+                            <input type="text" id="edit-profile-name" value="Ram Bhai">
+                        </div>
+                        <div class="form-group" style="text-align: left;">
+                            <label>Business Name</label>
+                            <input type="text" id="edit-profile-business" value="Ram Singh Tubewell">
+                        </div>
+                        <button class="btn-primary full-width interaction-active" onclick="saveProfile()">Save
+                            Changes</button>
+                        <button class="btn-small mt-2 interaction-active" style="background: var(--sys-gray);"
+                            onclick="toggleProfileEdit(false)">Cancel</button>
+                    </div>
+                </div>
+
+                <div class="list-card">
+                    <div class="list-item">
+                        <div class="item-info">
+                            <h4>Dark Mode</h4>
+                        </div>
+                        <div>
+                            <label class="switch">
+                                <input type="checkbox" id="theme-toggle">
+                                <span class="slider round"></span>
+                            </label>
+                        </div>
+                    </div>
+                    <div class="list-item interaction-active" style="color: var(--sys-red);"
+                        onclick="location.reload()">
+                        <div class="item-info">
+                            <h4 style="color: inherit;">Logout</h4>
+                        </div>
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+                            <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"></path>
+                            <polyline points="16 17 21 12 16 7"></polyline>
+                            <line x1="21" y1="12" x2="9" y2="12"></line>
+                        </svg>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- WATER USAGE MODAL -->
+    <div id="water-modal" class="modal-overlay">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3 data-i18n="paaniHisab">Paani Ka Hisab</h3>
+                <button class="close-btn interaction-active" onclick="closeModal('water-modal')">
+                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <line x1="18" y1="6" x2="6" y2="18" />
+                        <line x1="6" y1="6" x2="18" y2="18" />
+                    </svg>
+                </button>
+            </div>
+            <div class="modal-body">
+                <div class="form-group">
+                    <label data-i18n="customer">Customer</label>
+                    <select id="water-customer">
+                        <option value="1">Ram Lal - Field 1</option>
+                        <option value="2">Shyam - Field 2</option>
+                    </select>
+                </div>
+                <div class="time-grid">
+                    <div class="form-group">
+                        <label data-i18n="startTime">Start Time</label>
+                        <input type="time" id="time-start" value="06:30">
+                    </div>
+                    <div class="form-group">
+                        <label data-i18n="endTime">End Time</label>
+                        <input type="time" id="time-end" value="08:30">
+                    </div>
+                </div>
+                <div class="calc-box">
+                    <div class="calc-row">
+                        <span data-i18n="duration">Duration</span>
+                        <strong id="calc-duration">2.00 Hrs</strong>
+                    </div>
+                    <div class="calc-row">
+                        <span data-i18n="rate">Rate</span>
+                        <strong id="calc-rate">₹150 / hr</strong>
+                    </div>
+                    <div class="calc-row total">
+                        <span data-i18n="totalAmount">Total Amount</span>
+                        <strong id="calc-total" class="text-blue">₹300</strong>
+                    </div>
+                </div>
+                <button class="btn-primary full-width mt-4 interaction-active" id="save-water-btn" data-i18n="save">Save
+                    Record</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- ADD TUBEWELL MODAL -->
+    <div id="add-tubewell-modal" class="modal-overlay">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>Add New Tubewell</h3>
+                <button class="close-btn interaction-active" onclick="closeModal('add-tubewell-modal')">
+                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <line x1="18" y1="6" x2="6" y2="18" />
+                        <line x1="6" y1="6" x2="18" y2="18" />
+                    </svg>
+                </button>
+            </div>
+            <div class="modal-body">
+                <div class="form-group">
+                    <label>Tubewell Name</label>
+                    <input type="text" id="new-tw-name" placeholder="e.g. Tubewell 2">
+                </div>
+                <div class="form-group">
+                    <label>Location / Village</label>
+                    <input type="text" id="new-tw-location" placeholder="e.g. Village ABC">
+                </div>
+                <div class="form-group">
+                    <label>Rate per Hour (₹)</label>
+                    <input type="number" id="new-tw-rate" placeholder="150" value="150">
+                </div>
+                <button class="btn-primary full-width mt-4 interaction-active" onclick="addNewTubewell()">Add
+                    Tubewell</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- PAYMENT MODAL -->
+    <div id="payment-modal" class="modal-overlay">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>Add Payment</h3>
+                <button class="close-btn interaction-active" onclick="closeModal('payment-modal')">
+                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <line x1="18" y1="6" x2="6" y2="18" />
+                        <line x1="6" y1="6" x2="18" y2="18" />
+                    </svg>
+                </button>
+            </div>
+            <div class="modal-body">
+                <div class="form-group">
+                    <label>Amount (₹)</label>
+                    <input type="number" id="payment-amount" placeholder="Enter amount">
+                </div>
+                <div class="form-group">
+                    <label>Date</label>
+                    <input type="date" id="payment-date" value="">
+                </div>
+                <div class="form-group">
+                    <label>Note (Optional)</label>
+                    <input type="text" id="payment-note" placeholder="e.g. Cash payment">
+                </div>
+                <button class="btn-primary full-width mt-4 interaction-active" onclick="savePayment()">Save
+                    Payment</button>
+            </div>
+        </div>
+    </div>
+
+    <script type="module" src="app.js"></script>
+</body>
+
+</html>

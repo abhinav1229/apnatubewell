@@ -1,0 +1,16 @@
+{
+    "name": "Apna Tubewell",
+    "short_name": "Tubewell",
+    "description": "Khet ke paani ka poora hisab",
+    "start_url": "/index.html",
+    "display": "standalone",
+    "background_color": "#F2F2F7",
+    "theme_color": "#007AFF",
+    "icons": [
+        {
+            "src": "https://upload.wikimedia.org/wikipedia/commons/thumb/c/c2/Water_drop_icon.svg/512px-Water_drop_icon.svg.png",
+            "sizes": "512x512",
+            "type": "image/png"
+        }
+    ]
+}

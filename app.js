@@ -209,6 +209,7 @@ window.startWaterSession = async function () {
     await safeUpdateDoc(twRef, {
         status: 'running',
         currentCustomer: customerId,
+        currentCustomerUid: getCustomerById(customerId)?.customerUid || customerId,
         currentStartTime: startTime
     });
 
@@ -330,7 +331,24 @@ window.addNewCustomer = async function () {
     }
 
     const id = 'cust_' + Date.now();
-    const customerData = { id, name, phone, tubewellId, ownerId: ownerUid, ownerPhone, linkedAt: safeServerTimestamp(), customerUid };
+    // Find customer's actual UID from users collection by phone
+    let actualCustomerUid = customerUid;
+    if (!actualCustomerUid && !isMockMode) {
+        try {
+            const usersRef = collection(db, 'users');
+            const uq = query(usersRef, where('phone', '==', phone));
+            const usnap = await getDocs(uq);
+            if (!usnap.empty) {
+                actualCustomerUid = usnap.docs[0].id;
+            }
+        } catch (e) { }
+    }
+    // Fallback to phone-based UID
+    if (!actualCustomerUid) {
+        actualCustomerUid = 'phone_' + phone;
+    }
+
+    const customerData = { id, name, phone, tubewellId, ownerId: ownerUid, ownerPhone, linkedAt: safeServerTimestamp(), customerUid: actualCustomerUid };
 
     // Save to Firestore
     await safeSetDoc(doc(db, 'customers', id), customerData);
@@ -559,6 +577,153 @@ window.renderCustomerLinkedTubewell = async function () {
     infoDiv.innerHTML = '<p style="color: var(--ios-gray); font-size: 14px;">' + (currentLang === 'en' ? 'No tubewell linked' : 'कोई ट्यूबवेल लिंक नहीं') + '</p>';
     if (formDiv) formDiv.style.display = 'block';
     if (statusDiv) statusDiv.style.display = 'none';
+};
+window.renderMyTubewell = async function () {
+    const container = document.getElementById('my-tubewell-info');
+    if (!container) return;
+
+    const customerUid = localStorage.getItem('user_uid');
+    if (!customerUid) {
+        container.innerHTML = '<div class="list-item empty-state"><div class="item-info"><p>' + (currentLang === 'en' ? 'Please login first.' : 'कृपया पहले लॉगिन करें।') + '</p></div></div>';
+        return;
+    }
+
+    // Fetch all links from Firestore
+    let links = [];
+
+    if (!isMockMode) {
+        try {
+            const linksRef = collection(db, 'customer_links');
+            const q = query(linksRef, where('customerUid', '==', customerUid));
+            const snapshot = await getDocs(q);
+            snapshot.forEach(d => links.push(d.data()));
+        } catch (e) {
+            console.error('Fetch links failed:', e);
+        }
+    }
+
+    // Fallback to localStorage
+    if (links.length === 0) {
+        const localLink = JSON.parse(localStorage.getItem('customer_link') || 'null');
+        if (localLink) links.push(localLink);
+    }
+
+    if (links.length === 0) {
+        container.innerHTML = '<div class="list-item empty-state"><div class="item-info"><p>' + (currentLang === 'en' ? 'No tubewell linked yet.' : 'अभी तक कोई ट्यूबवेल लिंक नहीं।') + '</p></div></div>';
+        return;
+    }
+
+    // Build HTML for all linked tubewells
+    let html = '';
+
+    // Find this customer's ID in the customers collection for each owner
+    let myCustomerIds = {};
+    if (!isMockMode) {
+        try {
+            const custRef = collection(db, 'customers');
+            const cq = query(custRef, where('phone', '==', localStorage.getItem('user_phone')));
+            const csnap = await getDocs(cq);
+            csnap.forEach(d => {
+                const data = d.data();
+                myCustomerIds[data.ownerId] = data.id;
+            });
+        } catch (e) { }
+    }
+
+    for (const link of links) {
+        const ownerUid = link.ownerUid || link.ownerId;
+        if (!ownerUid) continue;
+
+        // Fetch tubewell data
+        let twData = {};
+        let ownerName = link.ownerName || link.ownerPhone || 'Owner';
+
+        if (!isMockMode) {
+            try {
+                const twDoc = await getDoc(doc(db, 'tubewells', ownerUid + '_primary'));
+                if (twDoc.exists()) twData = twDoc.data();
+            } catch (e) { }
+
+            try {
+                const ownerDoc = await getDoc(doc(db, 'users', ownerUid));
+                if (ownerDoc.exists()) ownerName = ownerDoc.data().name || ownerName;
+            } catch (e) { }
+        }
+
+        const statusText = twData.status === 'running' ? locales[currentLang].statusRunning :
+            twData.status === 'work_in_progress' ? locales[currentLang].statusWorkInProgress :
+                locales[currentLang].statusStopped;
+
+        const statusColor = twData.status === 'running' ? 'var(--ios-green)' :
+            twData.status === 'work_in_progress' ? '#FF9500' :
+                'var(--ios-gray)';
+
+        html +=
+            '<div class="list-item" style="flex-direction: column; align-items: flex-start; gap: 8px; margin-bottom: 12px;">' +
+            '<div style="display: flex; justify-content: space-between; width: 100%; align-items: center;">' +
+            '<h4 style="font-size: 17px; font-weight: 600;">' + (twData.name || 'Tubewell') + '</h4>' +
+            '<span class="status-badge ' + (twData.status || 'stopped') + '">' + statusText + '</span>' +
+            '</div>' +
+            '<p style="color: var(--ios-gray); font-size: 14px;">' + ownerName + ' • ' + (twData.location || '') + '</p>' +
+            '<p style="color: var(--ios-gray); font-size: 14px;">Rate: ₹' + (twData.rate || 150) + '/hr</p>' +
+            '<div style="margin-top: 8px; padding: 12px; background: var(--bg); border-radius: 10px; width: 100%;">' +
+            '<p style="font-size: 13px; color: var(--ios-gray); margin-bottom: 4px;">' + (currentLang === 'en' ? 'Current Status' : 'वर्तमान स्थिति') + '</p>' +
+            '<p style="font-size: 15px; font-weight: 500; color: ' + statusColor + ';">' +
+            (twData.status === 'running' ?
+                (currentLang === 'en' ? 'Water is running' : 'पानी चालू है') :
+                twData.status === 'work_in_progress' ?
+                    (currentLang === 'en' ? 'Under maintenance' : 'मरम्मत में है') :
+                    (currentLang === 'en' ? 'Available for use' : 'उपयोग के लिए उपलब्ध')) +
+            '</p>' +
+            (twData.currentCustomer ?
+                '<p style="font-size: 13px; color: var(--ios-gray); margin-top: 4px;">' +
+                (twData.currentCustomer === myCustomerIds[ownerUid] ?
+                    (currentLang === 'en' ? 'Running for you' : 'आपके लिए चालू है') :
+                    (currentLang === 'en' ? 'Currently in use by another customer' : 'वर्तमान में दूसरे ग्राहक द्वारा उपयोग में है')) +
+                '</p>' : '') +
+            '</div>' +
+            '<button class="btn-ghost mt-2" onclick="unlinkTubewellByOwner(\'' + ownerUid + '\')" style="width:100%; color:var(--ios-red); font-size: 13px; padding: 8px;">' +
+            (currentLang === 'en' ? 'Unlink this tubewell' : 'इस ट्यूबवेल को हटाएं') +
+            '</button>' +
+            '</div>';
+    }
+
+    container.innerHTML = html || '<div class="list-item empty-state"><div class="item-info"><p>' + (currentLang === 'en' ? 'No tubewell linked yet.' : 'अभी तक कोई ट्यूबवेल लिंक नहीं।') + '</p></div></div>';
+};
+
+window.unlinkTubewellByOwner = async function (ownerUid) {
+    const customerUid = localStorage.getItem('user_uid');
+    if (!customerUid || !ownerUid) return;
+
+    if (!isMockMode) {
+        try {
+            // Delete specific customer_link
+            await safeDeleteDoc(doc(db, 'customer_links', customerUid + '_' + ownerUid));
+
+            // Update link_requests to rejected
+            const reqRef = collection(db, 'link_requests');
+            const rq = query(reqRef, where('ownerUid', '==', ownerUid), where('customerUid', '==', customerUid));
+            const rsnap = await getDocs(rq);
+            rsnap.forEach(async (d) => {
+                await safeUpdateDoc(doc(db, 'link_requests', d.id), { status: 'rejected' });
+            });
+        } catch (e) {
+            console.error('Unlink failed:', e);
+        }
+    }
+
+    // If this was the only/primary link, clear localStorage
+    const linksRef = collection(db, 'customer_links');
+    const q = query(linksRef, where('customerUid', '==', customerUid));
+    const snapshot = await getDocs(q);
+
+    if (snapshot.empty) {
+        localStorage.removeItem('customer_link');
+    }
+
+    renderMyTubewell();
+    renderCustomerLinkedTubewell();
+    showToast(currentLang === 'en' ? 'Unlinked' : 'हटा दिया गया', 'info');
 };
 
 window.sendLinkRequest = async function () {
@@ -819,6 +984,7 @@ window.startCustomerListeners = function () {
                 saveTubewellData(data);
                 renderCustomerLinkedTubewell();
                 renderCustomerQueuePosition();
+                renderMyTubewell();
             }
         });
 
@@ -978,6 +1144,7 @@ const locales = {
         balance: "Balance",
         totalDue: "Total Due",
         totalPaid: "Total Paid",
+        deleteAccount: "Delete Account",
     },
     hi: {
         appTitle: "अपना ट्यूबवेल",
@@ -1055,6 +1222,7 @@ const locales = {
         balance: "बाकी",
         totalDue: "कुल बाकी",
         totalPaid: "कुल जमा",
+        deleteAccount: "खाता हटाएं",
     }
 };
 
@@ -1314,6 +1482,100 @@ window.saveProfile = async function () {
     toggleProfileEdit(false);
     showToast(currentLang === 'en' ? "Profile Updated!" : "प्रोफाइल अपडेट हो गई!", "success");
 }
+
+window.deleteProfile = async function () {
+    const confirmText = currentLang === 'en'
+        ? "Are you sure? This will permanently delete your account and all data. This cannot be undone."
+        : "क्या आप सुनिश्चित हैं? यह आपका खाता और सारा डेटा हमेशा के लिए हटा देगा। इसे वापस नहीं लाया जा सकता।";
+
+    if (!confirm(confirmText)) return;
+
+    const uid = localStorage.getItem('user_uid');
+    const phone = localStorage.getItem('user_phone');
+    const role = localStorage.getItem('user_role');
+
+    if (!uid) {
+        logout();
+        return;
+    }
+
+    showToast(currentLang === 'en' ? "Deleting account..." : "खाता हटाया जा रहा है...", "info");
+
+    try {
+        // Delete user document
+        await safeDeleteDoc(doc(db, 'users', uid));
+
+        // Delete tubewell data if owner
+        if (role === 'owner') {
+            await safeDeleteDoc(doc(db, 'tubewells', uid + '_primary'));
+
+            // Delete all customers linked to this owner
+            const custRef = collection(db, 'customers');
+            const custQuery = query(custRef, where('ownerId', '==', uid));
+            const custSnap = await getDocs(custQuery);
+            custSnap.forEach(async (d) => {
+                await safeDeleteDoc(doc(db, 'customers', d.id));
+            });
+
+            // Delete all customer_links
+            const linksRef = collection(db, 'customer_links');
+            const linksQuery = query(linksRef, where('ownerUid', '==', uid));
+            const linksSnap = await getDocs(linksQuery);
+            linksSnap.forEach(async (d) => {
+                await safeDeleteDoc(doc(db, 'customer_links', d.id));
+            });
+
+            // Delete queue entries
+            const queueRef = collection(db, 'queues');
+            const queueQuery = query(queueRef, where('ownerId', '==', uid));
+            const queueSnap = await getDocs(queueQuery);
+            queueSnap.forEach(async (d) => {
+                await safeDeleteDoc(doc(db, 'queues', d.id));
+            });
+
+            // Delete water usage records
+            const usageRef = collection(db, 'water_usage');
+            const usageQuery = query(usageRef, where('business_id', '==', uid));
+            const usageSnap = await getDocs(usageQuery);
+            usageSnap.forEach(async (d) => {
+                await safeDeleteDoc(doc(db, 'water_usage', d.id));
+            });
+
+            // Delete link requests
+            const reqRef = collection(db, 'link_requests');
+            const reqQuery = query(reqRef, where('ownerUid', '==', uid));
+            const reqSnap = await getDocs(reqQuery);
+            reqSnap.forEach(async (d) => {
+                await safeDeleteDoc(doc(db, 'link_requests', d.id));
+            });
+        }
+
+        // If customer, delete their links and requests
+        if (role === 'customer') {
+            const linksRef = collection(db, 'customer_links');
+            const linksQuery = query(linksRef, where('customerUid', '==', uid));
+            const linksSnap = await getDocs(linksQuery);
+            linksSnap.forEach(async (d) => {
+                await safeDeleteDoc(doc(db, 'customer_links', d.id));
+            });
+
+            const reqRef = collection(db, 'link_requests');
+            const reqQuery = query(reqRef, where('customerUid', '==', uid));
+            const reqSnap = await getDocs(reqQuery);
+            reqSnap.forEach(async (d) => {
+                await safeDeleteDoc(doc(db, 'link_requests', d.id));
+            });
+        }
+
+        showToast(currentLang === 'en' ? "Account deleted successfully" : "खाता सफलतापूर्वक हटा दिया गया", "success");
+    } catch (e) {
+        console.error('Delete failed:', e);
+        showToast(currentLang === 'en' ? "Some data could not be deleted" : "कुछ डेटा हटाया नहीं जा सका", "error");
+    }
+
+    // Always clear local and logout
+    logout();
+};
 
 /* --- MODALS --- */
 window.openModal = function (id) {
@@ -1766,6 +2028,7 @@ function setupCustomerUI() {
     document.getElementById('role-badge-text').style.color = 'var(--ios-green)';
     renderCustomerLinkedTubewell().then(() => {
         renderCustomerQueuePosition();
+        renderMyTubewell();
     });
 
     // Check if there's a pending request and verify its status from Firestore

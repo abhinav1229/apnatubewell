@@ -1,6 +1,6 @@
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.4.0/firebase-app.js";
 import { getAnalytics } from "https://www.gstatic.com/firebasejs/10.4.0/firebase-analytics.js";
-import { getFirestore, collection, addDoc, serverTimestamp } from "https://www.gstatic.com/firebasejs/10.4.0/firebase-firestore.js";
+import { getFirestore, collection, addDoc, serverTimestamp, getDoc, doc, setDoc, updateDoc, onSnapshot, query, where, getDocs, deleteDoc } from "https://www.gstatic.com/firebasejs/10.4.0/firebase-firestore.js";
 import { getAuth, RecaptchaVerifier, signInWithPhoneNumber } from "https://www.gstatic.com/firebasejs/10.4.0/firebase-auth.js";
 
 const firebaseConfig = {
@@ -21,12 +21,16 @@ let currentLang = 'en';
 let userRole = localStorage.getItem('user_role') || 'owner';
 
 window.logout = function () {
+    stopListeners();
     localStorage.removeItem('is_logged_in');
     localStorage.removeItem('user_phone');
     localStorage.removeItem('user_role');
+    localStorage.removeItem('user_uid');
     localStorage.removeItem('owner_info');
     localStorage.removeItem('profile_name');
     localStorage.removeItem('profile_business');
+    localStorage.removeItem('customer_link');
+    auth.signOut();
     location.reload();
 }
 
@@ -121,43 +125,75 @@ window.renderQueue = function () {
     }).join('');
 }
 
-window.addCustomerToQueue = function (customerId) {
-    const queue = getQueue();
-    if (queue.find(q => q.customerId === customerId)) {
+window.addCustomerToQueue = async function (customerId) {
+    const ownerUid = localStorage.getItem('user_uid');
+    const queueRef = collection(db, 'queues');
+    const q = query(queueRef, where('ownerId', '==', ownerUid), where('customerId', '==', customerId));
+    const snapshot = await getDocs(q);
+    if (!snapshot.empty) {
         showToast(currentLang === 'en' ? 'Already in queue' : 'पहले से कतार में है', 'info');
         return;
     }
-    queue.push({ customerId, addedAt: new Date().toISOString() });
-    saveQueue(queue);
-    renderQueue();
+    await addDoc(queueRef, { ownerId: ownerUid, customerId, addedAt: serverTimestamp() });
     showToast(currentLang === 'en' ? 'Added to queue' : 'कतार में जोड़ दिया गया', 'success');
-}
+};
 
-window.removeFromQueue = function (customerId) {
-    saveQueue(getQueue().filter(q => q.customerId !== customerId));
-    renderQueue();
+window.removeFromQueue = async function (customerId) {
+    const ownerUid = localStorage.getItem('user_uid');
+    const queueRef = collection(db, 'queues');
+    const q = query(queueRef, where('ownerId', '==', ownerUid), where('customerId', '==', customerId));
+    const snapshot = await getDocs(q);
+    snapshot.forEach(async (d) => { await deleteDoc(doc(db, 'queues', d.id)); });
     showToast(currentLang === 'en' ? 'Removed from queue' : 'कतार से हटा दिया गया', 'success');
-}
+};
 
-window.startWaterSession = function () {
+window.startWaterSession = async function () {
     const customerId = document.getElementById('start-water-customer').value;
     if (!customerId) { showToast(currentLang === 'en' ? 'Select a customer' : 'ग्राहक चुनें', 'error'); return; }
-    const tw = getTubewellData();
-    if (tw.status === 'work_in_progress') { showToast(currentLang === 'en' ? 'Tubewell under maintenance' : 'ट्यूबवेल मरम्मत में है', 'error'); return; }
-    saveQueue(getQueue().filter(q => q.customerId !== customerId));
-    renderQueue();
-    tw.status = 'running';
-    tw.currentCustomer = customerId;
-    tw.currentStartTime = new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false });
-    saveTubewellData(tw);
+
+    const ownerUid = localStorage.getItem('user_uid');
+    const twRef = doc(db, 'tubewells', ownerUid + '_primary');
+    const twDoc = await getDoc(twRef);
+    const tw = twDoc.data();
+
+    if (tw.status === 'work_in_progress') {
+        showToast(currentLang === 'en' ? 'Tubewell under maintenance' : 'ट्यूबवेल मरम्मत में है', 'error');
+        return;
+    }
+
+    // Remove from queue in Firestore
+    const queueRef = collection(db, 'queues');
+    const q = query(queueRef, where('ownerId', '==', ownerUid), where('customerId', '==', customerId));
+    const queueSnap = await getDocs(q);
+    queueSnap.forEach(async (d) => { await deleteDoc(doc(db, 'queues', d.id)); });
+
+    const startTime = new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false });
+    await updateDoc(twRef, {
+        status: 'running',
+        currentCustomer: customerId,
+        currentStartTime: startTime
+    });
+
+    // Update local
+    const localTw = getTubewellData();
+    localTw.status = 'running';
+    localTw.currentCustomer = customerId;
+    localTw.currentStartTime = startTime;
+    saveTubewellData(localTw);
+
     renderStatusCard();
     closeModal('start-water-modal');
     showToast(currentLang === 'en' ? 'Water started' : 'पानी शुरू हो गया', 'success');
-}
+};
 
-window.stopWaterSession = function () {
-    const tw = getTubewellData();
+window.stopWaterSession = async function () {
+    const ownerUid = localStorage.getItem('user_uid');
+    const twRef = doc(db, 'tubewells', ownerUid + '_primary');
+    const twDoc = await getDoc(twRef);
+    const tw = twDoc.data();
+
     if (tw.status !== 'running' || !tw.currentCustomer) return;
+
     const startTime = tw.currentStartTime;
     const endTime = new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false });
     const today = new Date().toISOString().split('T')[0];
@@ -168,40 +204,74 @@ window.stopWaterSession = function () {
     const rate = tw.rate || 150;
     const amount = Math.round(duration * rate);
 
+    // Save usage to Firestore
+    const usageRef = doc(collection(db, 'water_usage'));
+    await setDoc(usageRef, {
+        business_id: ownerUid,
+        customer_id: tw.currentCustomer,
+        start_time: startTime,
+        end_time: endTime,
+        duration: parseFloat(duration.toFixed(2)),
+        rate,
+        amount,
+        status: 'pending',
+        type: 'water',
+        date: today,
+        created_at: serverTimestamp()
+    });
+
+    // Reset tubewell in Firestore
+    await updateDoc(twRef, {
+        status: 'stopped',
+        currentCustomer: null,
+        currentStartTime: null
+    });
+
+    // Update local
+    const localTw = getTubewellData();
+    localTw.status = 'stopped';
+    localTw.currentCustomer = null;
+    localTw.currentStartTime = null;
+    saveTubewellData(localTw);
+
+    // Save to local history
     const history = getWaterHistory();
     history.push({ customerId: tw.currentCustomer, date: today, start: startTime, end: endTime, duration: parseFloat(duration.toFixed(2)), rate, amount, status: 'pending', type: 'water' });
     saveWaterHistory(history);
 
-    const custHistory = JSON.parse(localStorage.getItem('customer_history') || '{}');
-    if (!custHistory[tw.currentCustomer]) custHistory[tw.currentCustomer] = [];
-    custHistory[tw.currentCustomer].push({ type: 'water', date: today, start: startTime, end: endTime, duration: parseFloat(duration.toFixed(2)), amount, status: 'pending' });
-    localStorage.setItem('customer_history', JSON.stringify(custHistory));
-
-    if (!customerData[tw.currentCustomer]) customerData[tw.currentCustomer] = { name: '', phone: '', history: [] };
-    customerData[tw.currentCustomer].history.push({ type: 'water', date: today, start: startTime, end: endTime, duration: parseFloat(duration.toFixed(2)), amount, status: 'pending' });
-
-    tw.status = 'stopped';
-    tw.currentCustomer = null;
-    tw.currentStartTime = null;
-    saveTubewellData(tw);
     renderStatusCard();
     updateDashboardStats();
     renderPendingPayments();
     showToast((currentLang === 'en' ? 'Stopped. Duration: ' : 'बंद. समय: ') + duration.toFixed(2) + (currentLang === 'en' ? ' hrs' : ' घंटे'), 'success');
-}
+};
 
-window.setMaintenanceMode = function (active) {
-    const tw = getTubewellData();
-    if (active && tw.status === 'running') { showToast(currentLang === 'en' ? 'Stop water first' : 'पहले पानी बंद करें', 'error'); return; }
-    tw.status = active ? 'work_in_progress' : 'stopped';
-    if (active) { tw.currentCustomer = null; tw.currentStartTime = null; }
-    saveTubewellData(tw);
+window.setMaintenanceMode = async function (active) {
+    const ownerUid = localStorage.getItem('user_uid');
+    const twRef = doc(db, 'tubewells', ownerUid + '_primary');
+    const twDoc = await getDoc(twRef);
+    const tw = twDoc.data();
+
+    if (active && tw.status === 'running') {
+        showToast(currentLang === 'en' ? 'Stop water first' : 'पहले पानी बंद करें', 'error');
+        return;
+    }
+    await updateDoc(twRef, {
+        status: active ? 'work_in_progress' : 'stopped',
+        currentCustomer: active ? null : tw.currentCustomer,
+        currentStartTime: active ? null : tw.currentStartTime
+    });
+
+    const localTw = getTubewellData();
+    localTw.status = active ? 'work_in_progress' : 'stopped';
+    if (active) { localTw.currentCustomer = null; localTw.currentStartTime = null; }
+    saveTubewellData(localTw);
+
     renderStatusCard();
     showToast(currentLang === 'en' ? (active ? 'Maintenance mode on' : 'Maintenance mode off') : (active ? 'मरम्मत मोड चालू' : 'मरम्मत मोड बंद'), 'success');
-}
+};
 
 /* --- CUSTOMER MANAGEMENT --- */
-window.addNewCustomer = function () {
+window.addNewCustomer = async function () {
     const name = document.getElementById('new-customer-name').value.trim();
     const phone = document.getElementById('new-customer-phone').value.trim();
     const tubewellId = document.getElementById('new-customer-tubewell').value;
@@ -209,22 +279,37 @@ window.addNewCustomer = function () {
         showToast(currentLang === 'en' ? 'Enter valid name and 10-digit phone' : 'सही नाम और 10 अंकों का फोन दर्ज करें', 'error');
         return;
     }
-    const customers = getCustomers();
-    if (customers.find(c => c.phone === phone)) {
-        showToast(currentLang === 'en' ? 'Customer already exists' : 'ग्राहक पहले से मौजूद है', 'error');
-        return;
+    const ownerUid = localStorage.getItem('user_uid');
+    const ownerPhone = localStorage.getItem('user_phone');
+
+    // Check if customer user exists
+    const usersRef = collection(db, 'users');
+    const q = query(usersRef, where('phone', '==', phone));
+    const snapshot = await getDocs(q);
+    let customerUid = null;
+    if (!snapshot.empty) {
+        customerUid = snapshot.docs[0].id;
     }
+
     const id = 'cust_' + Date.now();
-    customers.push({ id, name, phone, tubewellId, linkedAt: new Date().toISOString() });
+    const customerData = { id, name, phone, tubewellId, ownerId: ownerUid, ownerPhone, linkedAt: serverTimestamp(), customerUid };
+
+    // Save to Firestore
+    await setDoc(doc(db, 'customers', id), customerData);
+
+    // Also save to local
+    const customers = getCustomers();
+    customers.push(customerData);
     saveCustomers(customers);
     customerData[id] = { name, phone, history: [] };
+
     populateCustomerDropdowns();
     renderCustomers();
     closeModal('add-customer-modal');
     document.getElementById('new-customer-name').value = '';
     document.getElementById('new-customer-phone').value = '';
     showToast(currentLang === 'en' ? 'Customer added!' : 'ग्राहक जोड़ दिया गया!', 'success');
-}
+};
 
 window.renderCustomers = function () {
     const customers = getCustomers();
@@ -295,21 +380,53 @@ window.renderCustomerLinkedTubewell = function () {
     }
 }
 
-window.linkToOwnerTubewell = function () {
+window.linkToOwnerTubewell = async function () {
     const phone = document.getElementById('link-owner-phone').value.trim();
     if (phone.length !== 10) { showToast(currentLang === 'en' ? 'Enter valid 10-digit phone' : 'सही 10 अंकों का फोन दर्ज करें', 'error'); return; }
-    const ownerInfo = JSON.parse(localStorage.getItem('owner_info') || '{}');
-    const allUserInfo = JSON.parse(localStorage.getItem('user_info') || '{}');
-    if (ownerInfo.phone === phone || allUserInfo.phone === phone) {
-        const twData = JSON.parse(localStorage.getItem('tubewell_data') || '{}');
-        localStorage.setItem('customer_link', JSON.stringify({ ownerPhone: phone, tubewellId: 'primary', linkedAt: new Date().toISOString() }));
-        renderCustomerLinkedTubewell();
-        showToast(currentLang === 'en' ? 'Linked successfully!' : 'सफलतापूर्वक जुड़ गया!', 'success');
-    } else {
-        showToast(currentLang === 'en' ? 'Owner not found. Ask owner to add you first.' : 'मालिक नहीं मिला। मालिक से कहें कि वह आपको जोड़े।', 'error');
-    }
-}
 
+    // Query Firestore for owner
+    const usersRef = collection(db, 'users');
+    const q = query(usersRef, where('phone', '==', phone), where('role', '==', 'owner'));
+    const snapshot = await getDocs(q);
+
+    if (snapshot.empty) {
+        showToast(currentLang === 'en' ? 'Owner not found. Ask owner to add you first.' : 'मालिक नहीं मिला। मालिक से कहें कि वह आपको जोड़े।', 'error');
+        return;
+    }
+
+    const ownerData = snapshot.docs[0].data();
+    const ownerUid = snapshot.docs[0].id;
+
+    // Get owner's tubewell
+    const twRef = doc(db, 'tubewells', ownerUid + '_primary');
+    const twDoc = await getDoc(twRef);
+    const twData = twDoc.exists() ? twDoc.data() : {};
+
+    localStorage.setItem('customer_link', JSON.stringify({
+        ownerPhone: phone,
+        ownerUid: ownerUid,
+        tubewellId: 'primary',
+        linkedAt: new Date().toISOString()
+    }));
+
+    // Save link to Firestore for owner to see
+    const customerUid = localStorage.getItem('user_uid');
+    const customerPhone = localStorage.getItem('user_phone');
+    const userInfo = JSON.parse(localStorage.getItem('user_info') || '{}');
+    await setDoc(doc(db, 'customer_links', customerUid + '_' + ownerUid), {
+        customerUid,
+        customerPhone,
+        customerName: userInfo.name || '',
+        ownerUid,
+        ownerPhone: phone,
+        tubewellId: 'primary',
+        status: 'linked',
+        linkedAt: serverTimestamp()
+    });
+
+    renderCustomerLinkedTubewell();
+    showToast(currentLang === 'en' ? 'Linked successfully!' : 'सफलतापूर्वक जुड़ गया!', 'success');
+};
 window.unlinkTubewell = function () {
     localStorage.removeItem('customer_link');
     renderCustomerLinkedTubewell();
@@ -331,6 +448,83 @@ window.renderCustomerQueuePosition = function () {
     if (idx === 0) { posEl.innerHTML = '<span style="color:var(--ios-green); font-size:13px;">' + locales[currentLang].youAreNext + '</span>'; return; }
     posEl.innerText = '#' + (idx + 1);
 }
+
+/* --- REAL-TIME LISTENERS --- */
+let unsubTubewell = null;
+let unsubQueue = null;
+let unsubCustomers = null;
+
+window.startOwnerListeners = function () {
+    const ownerUid = localStorage.getItem('user_uid');
+    if (!ownerUid) return;
+
+    // Listen to tubewell changes
+    const twRef = doc(db, 'tubewells', ownerUid + '_primary');
+    unsubTubewell = onSnapshot(twRef, (doc) => {
+        if (doc.exists()) {
+            const data = doc.data();
+            saveTubewellData(data);
+            renderStatusCard();
+            renderTubewells();
+        }
+    });
+
+    // Listen to queue changes
+    const queueRef = collection(db, 'queues');
+    const q = query(queueRef, where('ownerId', '==', ownerUid));
+    unsubQueue = onSnapshot(q, (snapshot) => {
+        const queue = [];
+        snapshot.forEach(d => queue.push(d.data()));
+        queue.sort((a, b) => a.addedAt?.toMillis?.() - b.addedAt?.toMillis?.() || 0);
+        saveQueue(queue);
+        renderQueue();
+    });
+
+    // Listen to customers changes
+    const custRef = collection(db, 'customers');
+    const cq = query(custRef, where('ownerId', '==', ownerUid));
+    unsubCustomers = onSnapshot(cq, (snapshot) => {
+        const customers = [];
+        snapshot.forEach(d => customers.push(d.data()));
+        saveCustomers(customers);
+        loadCustomerData();
+        renderCustomers();
+        populateCustomerDropdowns();
+    });
+};
+
+window.startCustomerListeners = function () {
+    const link = JSON.parse(localStorage.getItem('customer_link') || 'null');
+    if (!link || !link.ownerUid) return;
+
+    // Listen to owner's tubewell status
+    const twRef = doc(db, 'tubewells', link.ownerUid + '_primary');
+    unsubTubewell = onSnapshot(twRef, (doc) => {
+        if (doc.exists()) {
+            const data = doc.data();
+            saveTubewellData(data);
+            renderCustomerLinkedTubewell();
+            renderCustomerQueuePosition();
+        }
+    });
+
+    // Listen to queue for this customer
+    const customerUid = localStorage.getItem('user_uid');
+    const queueRef = collection(db, 'queues');
+    const q = query(queueRef, where('ownerId', '==', link.ownerUid));
+    unsubQueue = onSnapshot(q, (snapshot) => {
+        const queue = [];
+        snapshot.forEach(d => queue.push(d.data()));
+        saveQueue(queue);
+        renderCustomerQueuePosition();
+    });
+};
+
+window.stopListeners = function () {
+    if (unsubTubewell) { unsubTubewell(); unsubTubewell = null; }
+    if (unsubQueue) { unsubQueue(); unsubQueue = null; }
+    if (unsubCustomers) { unsubCustomers(); unsubCustomers = null; }
+};
 
 /* --- TOAST NOTIFICATIONS --- */
 window.showToast = function (message, type = 'info') {
@@ -531,38 +725,73 @@ navItems.forEach(item => {
 });
 
 /* --- LOGIN --- */
-document.getElementById('send-otp-btn').addEventListener('click', () => {
+let confirmationResult = null;
+
+document.getElementById('send-otp-btn').addEventListener('click', async () => {
     const phoneInput = document.getElementById('login-phone').value;
-    if (phoneInput.length === 10) {
-        localStorage.setItem('is_logged_in', 'true');
-        localStorage.setItem('user_phone', phoneInput);
-        localStorage.setItem('user_role', userRole);
-        showToast(currentLang === 'en' ? "Login Successful!" : "लॉगिन सफल!", "success");
-
-        document.getElementById('login-screen').style.display = 'none';
-        document.getElementById('login-screen').classList.remove('active');
-
-        const ownerInfo = localStorage.getItem('owner_info');
-
-        if (userRole === 'customer') {
-            document.getElementById('basic-info-screen').classList.add('active');
-        } else {
-            // Owner flow
-            if (ownerInfo) {
-                document.getElementById('app-shell').style.display = 'block';
-                loadOwnerData();
-                setupOwnerUI();
-            } else {
-                document.getElementById('basic-info-screen').classList.add('active');
-            }
-        }
-    } else {
+    if (phoneInput.length !== 10) {
         showToast(currentLang === 'en' ? "Enter valid 10 digit number" : "सही 10 अंकों का नंबर दर्ज करें", "error");
+        return;
+    }
+    const phone = '+91' + phoneInput;
+
+    try {
+        const verifier = new RecaptchaVerifier(auth, 'recaptcha-container', { size: 'invisible' });
+        confirmationResult = await signInWithPhoneNumber(auth, phone, verifier);
+        document.getElementById('phone-auth-section').style.display = 'none';
+        document.getElementById('otp-verify-section').style.display = 'block';
+        showToast(currentLang === 'en' ? "OTP Sent!" : "OTP भेज दिया गया!", "success");
+    } catch (e) {
+        console.error(e);
+        showToast(currentLang === 'en' ? "Failed to send OTP" : "OTP भेजने में विफल", "error");
+    }
+});
+
+document.getElementById('verify-otp-btn').addEventListener('click', async () => {
+    const otp = document.getElementById('otp-input').value;
+    if (!otp || otp.length !== 6) {
+        showToast(currentLang === 'en' ? "Enter 6-digit OTP" : "6 अंकों का OTP दर्ज करें", "error");
+        return;
+    }
+    try {
+        const result = await confirmationResult.confirm(otp);
+        const user = result.user;
+        const phone = user.phoneNumber.replace('+91', '');
+
+        localStorage.setItem('is_logged_in', 'true');
+        localStorage.setItem('user_phone', phone);
+        localStorage.setItem('user_role', userRole);
+        localStorage.setItem('user_uid', user.uid);
+
+        // Check if user exists in Firestore
+        const userDoc = await getDoc(doc(db, 'users', user.uid));
+        if (userDoc.exists()) {
+            const data = userDoc.data();
+            localStorage.setItem('user_info', JSON.stringify({ name: data.name, village: data.village, phone }));
+            if (data.role === 'owner') {
+                localStorage.setItem('owner_info', JSON.stringify({ name: data.name, village: data.village, phone }));
+                localStorage.setItem('tubewell_data', JSON.stringify(data.tubewell || {}));
+            }
+            showToast(currentLang === 'en' ? "Login Successful!" : "लॉगिन सफल!", "success");
+            document.getElementById('login-screen').style.display = 'none';
+            document.getElementById('login-screen').classList.remove('active');
+            document.getElementById('app-shell').style.display = 'block';
+            if (data.role === 'customer') setupCustomerUI();
+            else setupOwnerUI();
+        } else {
+            // New user - show basic info screen
+            document.getElementById('login-screen').style.display = 'none';
+            document.getElementById('login-screen').classList.remove('active');
+            document.getElementById('basic-info-screen').classList.add('active');
+        }
+    } catch (e) {
+        console.error(e);
+        showToast(currentLang === 'en' ? "Invalid OTP" : "गलत OTP", "error");
     }
 });
 
 /* --- BASIC INFO ONBOARDING --- */
-document.getElementById('save-basic-info-btn').addEventListener('click', () => {
+document.getElementById('save-basic-info-btn').addEventListener('click', async () => {
     const name = document.getElementById('owner-name').value.trim();
     const village = document.getElementById('owner-village').value.trim();
     if (!name || !village) {
@@ -570,26 +799,31 @@ document.getElementById('save-basic-info-btn').addEventListener('click', () => {
         return;
     }
 
-    const userData = { name, village, phone: document.getElementById('login-phone').value };
-    localStorage.setItem('user_info', JSON.stringify(userData)); // Generic user info, not owner-specific
+    const phone = localStorage.getItem('user_phone');
+    const uid = localStorage.getItem('user_uid');
+    const userData = { name, village, phone, role: userRole, createdAt: serverTimestamp() };
+
+    // Save to Firestore
+    await setDoc(doc(db, 'users', uid), userData);
+    localStorage.setItem('user_info', JSON.stringify({ name, village, phone }));
 
     document.getElementById('basic-info-screen').classList.remove('active');
     document.getElementById('app-shell').style.display = 'block';
 
-    // Load greeting for both roles
     document.querySelector('.greeting').innerText = (currentLang === 'en' ? 'Namaste, ' : 'नमस्ते, ') + name;
     document.getElementById('profile-name-display').innerText = name;
     document.getElementById('edit-profile-name').value = name;
 
     if (userRole === 'customer') {
-        document.getElementById('app-shell').style.display = 'block';
         setupCustomerUI();
     } else {
-        localStorage.setItem('owner_info', JSON.stringify(userData)); // Only set owner_info for owners
-        loadOwnerData();
+        localStorage.setItem('owner_info', JSON.stringify({ name, village, phone }));
+        // Create default tubewell
+        const defaultTw = { name: name + ' Tubewell', location: village, rate: 150, status: 'stopped', currentCustomer: null, currentStartTime: null, ownerId: uid };
+        await setDoc(doc(db, 'tubewells', uid + '_primary'), defaultTw);
+        localStorage.setItem('tubewell_data', JSON.stringify(defaultTw));
         setupOwnerUI();
     }
-
     showToast(currentLang === 'en' ? "Welcome!" : "स्वागत है!", "success");
 });
 
@@ -614,18 +848,20 @@ window.toggleProfileEdit = function (show) {
     document.getElementById('profile-edit-mode').style.display = show ? 'block' : 'none';
 }
 
-window.saveProfile = function () {
+window.saveProfile = async function () {
     const name = document.getElementById('edit-profile-name').value.trim();
-    const business = document.getElementById('edit-profile-business').value.trim();
-    if (!name || !business) {
+    const village = document.getElementById('edit-profile-business').value.trim();
+    if (!name || !village) {
         showToast(currentLang === 'en' ? "Please fill all fields" : "सभी फील्ड भरें", "error");
         return;
     }
+    const uid = localStorage.getItem('user_uid');
+    await updateDoc(doc(db, 'users', uid), { name, village });
     localStorage.setItem('profile_name', name);
-    localStorage.setItem('profile_village', business);
+    localStorage.setItem('profile_village', village);
     document.getElementById('profile-name-display').innerText = name;
     document.querySelector('.greeting').innerText = (currentLang === 'en' ? 'Namaste, ' : 'नमस्ते, ') + name;
-    document.getElementById('profile-business-display').innerText = business;
+    document.getElementById('profile-business-display').innerText = village;
     toggleProfileEdit(false);
     showToast(currentLang === 'en' ? "Profile Updated!" : "प्रोफाइल अपडेट हो गई!", "success");
 }
@@ -742,7 +978,7 @@ function renderTubewells() {
     }
 }
 
-window.addNewTubewell = function () {
+window.addNewTubewell = async function () {
     const name = document.getElementById('new-tw-name').value.trim();
     const location = document.getElementById('new-tw-location').value.trim();
     const rate = parseFloat(document.getElementById('new-tw-rate').value);
@@ -750,9 +986,15 @@ window.addNewTubewell = function () {
         showToast(currentLang === 'en' ? "Please fill all fields" : "सभी फील्ड भरें", "error");
         return;
     }
+    const ownerUid = localStorage.getItem('user_uid');
     const extras = JSON.parse(localStorage.getItem('tubewell_extras') || '[]');
-    extras.push({ name, location, rate, createdAt: new Date().toISOString() });
+    const newTw = { name, location, rate, createdAt: new Date().toISOString(), ownerId: ownerUid, status: 'stopped', currentCustomer: null, currentStartTime: null };
+    extras.push(newTw);
     localStorage.setItem('tubewell_extras', JSON.stringify(extras));
+
+    // Save to Firestore
+    await setDoc(doc(db, 'tubewells', ownerUid + '_extra_' + extras.length), newTw);
+
     renderTubewells();
     closeModal('add-tubewell-modal');
     document.getElementById('new-tw-name').value = '';
@@ -993,6 +1235,7 @@ function setupOwnerUI() {
     renderQueue();
     updateDashboardStats();
     renderPendingPayments();
+    startOwnerListeners();
 }
 
 function setupCustomerUI() {
@@ -1064,6 +1307,7 @@ function setupCustomerUI() {
     document.getElementById('role-badge-text').style.color = 'var(--ios-green)';
     renderCustomerLinkedTubewell();
     renderCustomerQueuePosition();
+    startCustomerListeners();
 }
 
 

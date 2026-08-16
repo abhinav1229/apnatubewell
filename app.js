@@ -17,7 +17,7 @@ const app = initializeApp(firebaseConfig);
 const analytics = getAnalytics(app);
 const db = getFirestore(app);
 const auth = getAuth(app);
-const isMockMode = true; // Set to false when you enable real Firebase Auth
+const isMockMode = false; // Set to false when you enable real Firebase Auth
 let currentLang = 'en';
 let userRole = localStorage.getItem('user_role') || 'owner';
 
@@ -48,14 +48,26 @@ function safeServerTimestamp() {
 
 window.logout = function () {
     stopListeners();
+
+    // Clear ALL user-related localStorage
     localStorage.removeItem('is_logged_in');
     localStorage.removeItem('user_phone');
     localStorage.removeItem('user_role');
     localStorage.removeItem('user_uid');
+    localStorage.removeItem('user_info');
     localStorage.removeItem('owner_info');
     localStorage.removeItem('profile_name');
+    localStorage.removeItem('profile_village');
     localStorage.removeItem('profile_business');
     localStorage.removeItem('customer_link');
+    localStorage.removeItem('pending_request_owner');
+    localStorage.removeItem('customers');
+    localStorage.removeItem('water_queue');
+    localStorage.removeItem('tubewell_data');
+    localStorage.removeItem('tubewell_extras');
+    localStorage.removeItem('water_history');
+    localStorage.removeItem('customer_history');
+
     auth.signOut();
     location.reload();
 }
@@ -323,6 +335,20 @@ window.addNewCustomer = async function () {
     // Save to Firestore
     await safeSetDoc(doc(db, 'customers', id), customerData);
 
+    // Create customer_link so customer can see this owner
+    if (customerUid) {
+        await safeSetDoc(doc(db, 'customer_links', customerUid + '_' + ownerUid), {
+            customerUid: customerUid,
+            customerPhone: phone,
+            customerName: name,
+            ownerUid: ownerUid,
+            ownerPhone: ownerPhone,
+            tubewellId: tubewellId,
+            status: 'linked',
+            linkedAt: safeServerTimestamp()
+        });
+    }
+
     // Also save to local
     const customers = getCustomers();
     customers.push(customerData);
@@ -467,13 +493,42 @@ window.renderPendingPayments = function () {
 }
 
 /* --- CUSTOMER ROLE: LINK TO TUBEWELL --- */
-window.renderCustomerLinkedTubewell = function () {
-    const link = JSON.parse(localStorage.getItem('customer_link') || 'null');
-    const pending = JSON.parse(localStorage.getItem('pending_request_owner') || 'null');
+window.renderCustomerLinkedTubewell = async function () {
+    const customerUid = localStorage.getItem('user_uid');
     const infoDiv = document.getElementById('customer-linked-tubewell-info');
     const formDiv = document.getElementById('link-tubewell-form');
     const statusDiv = document.getElementById('customer-request-status');
     if (!infoDiv) return;
+
+    // Check localStorage first
+    const link = JSON.parse(localStorage.getItem('customer_link') || 'null');
+    const pending = JSON.parse(localStorage.getItem('pending_request_owner') || 'null');
+
+    // Also fetch from Firestore to catch owner-added links
+    let firestoreLinks = [];
+    if (!isMockMode && customerUid) {
+        try {
+            const linksRef = collection(db, 'customer_links');
+            const q = query(linksRef, where('customerUid', '==', customerUid));
+            const snapshot = await getDocs(q);
+            snapshot.forEach(d => firestoreLinks.push(d.data()));
+        } catch (e) {
+            console.error('Fetch customer links failed:', e);
+        }
+    }
+
+    // If owner added customer directly, auto-create local link
+    if (firestoreLinks.length > 0 && !link) {
+        const firstLink = firestoreLinks[0];
+        localStorage.setItem('customer_link', JSON.stringify({
+            ownerPhone: firstLink.ownerPhone,
+            ownerUid: firstLink.ownerUid,
+            tubewellId: firstLink.tubewellId || 'primary',
+            linkedAt: new Date().toISOString()
+        }));
+        // Refresh to use updated localStorage
+        return renderCustomerLinkedTubewell();
+    }
 
     if (link) {
         const ownerInfo = JSON.parse(localStorage.getItem('owner_info') || '{}');
@@ -1066,74 +1121,58 @@ document.getElementById('send-otp-btn').addEventListener('click', async () => {
         return;
     }
 
-    localStorage.setItem('is_logged_in', 'true');
+    // Generate consistent UID from phone number
+    const uid = 'phone_' + phoneInput;
+    localStorage.setItem('user_uid', uid);
     localStorage.setItem('user_phone', phoneInput);
     localStorage.setItem('user_role', userRole);
+    localStorage.setItem('is_logged_in', 'true');
 
-    // Always check Firestore first — phone is the source of truth
-    let existingUser = null;
-    let existingUid = null;
+    // Check if user already exists in Firestore
+    try {
+        const userDoc = await getDoc(doc(db, 'users', uid));
+        if (userDoc.exists()) {
+            const existingUser = userDoc.data();
 
-    if (!isMockMode) {
-        try {
-            const usersRef = collection(db, 'users');
-            const q = query(usersRef, where('phone', '==', phoneInput), where('role', '==', userRole));
-            const snapshot = await getDocs(q);
-            if (!snapshot.empty) {
-                existingUser = snapshot.docs[0].data();
-                existingUid = snapshot.docs[0].id;
-            }
-        } catch (e) {
-            console.error('Firestore check failed:', e);
-        }
-    }
-
-    if (existingUser && existingUid) {
-        // Existing user found in Firestore — restore everything
-        localStorage.setItem('user_uid', existingUid);
-        localStorage.setItem('user_info', JSON.stringify({
-            name: existingUser.name,
-            village: existingUser.village,
-            phone: phoneInput
-        }));
-
-        if (userRole === 'owner') {
-            localStorage.setItem('owner_info', JSON.stringify({
+            // Restore user data
+            localStorage.setItem('user_info', JSON.stringify({
                 name: existingUser.name,
                 village: existingUser.village,
                 phone: phoneInput
             }));
-            // Also restore tubewell data
-            try {
-                const twDoc = await getDoc(doc(db, 'tubewells', existingUid + '_primary'));
+
+            if (userRole === 'owner') {
+                localStorage.setItem('owner_info', JSON.stringify({
+                    name: existingUser.name,
+                    village: existingUser.village,
+                    phone: phoneInput
+                }));
+
+                // Restore tubewell data
+                const twDoc = await getDoc(doc(db, 'tubewells', uid + '_primary'));
                 if (twDoc.exists()) {
                     localStorage.setItem('tubewell_data', JSON.stringify(twDoc.data()));
                 }
-            } catch (e) {
-                console.error('Tubewell restore failed:', e);
             }
-        }
 
-        document.getElementById('login-screen').style.display = 'none';
-        document.getElementById('login-screen').classList.remove('active');
-        document.getElementById('app-shell').style.display = 'block';
+            document.getElementById('login-screen').style.display = 'none';
+            document.getElementById('app-shell').style.display = 'block';
 
-        if (userRole === 'customer') {
-            setupCustomerUI();
-        } else {
-            loadOwnerData();
-            setupOwnerUI();
+            if (userRole === 'customer') {
+                setupCustomerUI();
+            } else {
+                loadOwnerData();
+                setupOwnerUI();
+            }
+            showToast(currentLang === 'en' ? "Welcome back!" : "वापसी का स्वागत है!", "success");
+            return;
         }
-        showToast(currentLang === 'en' ? "Welcome back!" : "वापसी का स्वागत है!", "success");
-        return;
+    } catch (e) {
+        console.error('User lookup failed:', e);
     }
 
-    // New user — generate UID and show onboarding
-    const newUid = 'user_' + Date.now();
-    localStorage.setItem('user_uid', newUid);
-
+    // New user — show onboarding
     document.getElementById('login-screen').style.display = 'none';
-    document.getElementById('login-screen').classList.remove('active');
     document.getElementById('basic-info-screen').classList.add('active');
 });
 
@@ -1210,11 +1249,7 @@ document.getElementById('save-basic-info-btn').addEventListener('click', async (
     }
 
     const phone = localStorage.getItem('user_phone');
-    let uid = localStorage.getItem('user_uid');
-    if (!uid) {
-        uid = 'user_' + Date.now();
-        localStorage.setItem('user_uid', uid);
-    }
+    const uid = localStorage.getItem('user_uid'); // Already set in login
 
     const userData = { name, village, phone, role: userRole, createdAt: safeServerTimestamp() };
 
@@ -1729,7 +1764,9 @@ function setupCustomerUI() {
     document.getElementById('role-badge-text').innerText = currentLang === 'en' ? 'Customer' : 'ग्राहक';
     document.getElementById('role-badge-text').style.background = 'rgba(52,199,89,0.1)';
     document.getElementById('role-badge-text').style.color = 'var(--ios-green)';
-    renderCustomerLinkedTubewell();
+    renderCustomerLinkedTubewell().then(() => {
+        renderCustomerQueuePosition();
+    });
 
     // Check if there's a pending request and verify its status from Firestore
     const pending = JSON.parse(localStorage.getItem('pending_request_owner') || 'null');
@@ -1748,7 +1785,6 @@ function setupCustomerUI() {
                     }));
                     localStorage.removeItem('pending_request_owner');
                     renderCustomerLinkedTubewell();
-                    renderCustomerQueuePosition();
                     showToast(currentLang === 'en' ? 'Request accepted!' : 'अनुरोध स्वीकार!', 'success');
                 } else if (status === 'rejected') {
                     localStorage.setItem('pending_request_owner', JSON.stringify({ ...pending, status: 'rejected' }));
@@ -1758,7 +1794,6 @@ function setupCustomerUI() {
             }
         });
     }
-    renderCustomerQueuePosition();
     startCustomerListeners();
 }
 

@@ -56,6 +56,29 @@
                         <input type="tel" id="login-phone" placeholder="9876543210" maxlength="10" inputmode="numeric">
                     </div>
                 </div>
+
+                <!-- ROLE SELECTOR -->
+                <div class="form-group mt-3">
+                    <label>I am a</label>
+                    <div class="role-selector">
+                        <button class="role-btn active" id="role-owner" onclick="selectRole('owner')">
+                            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                stroke-width="2">
+                                <path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6" />
+                            </svg>
+                            <span>Tubewell Owner</span>
+                        </button>
+                        <button class="role-btn" id="role-customer" onclick="selectRole('customer')">
+                            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                stroke-width="2">
+                                <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" />
+                                <circle cx="12" cy="7" r="4" />
+                            </svg>
+                            <span>Customer</span>
+                        </button>
+                    </div>
+                </div>
+
                 <button class="btn-primary mt-3" id="send-otp-btn" data-i18n="login">Send OTP</button>
             </div>
 
@@ -101,7 +124,7 @@
         <!-- Header -->
         <header class="app-header">
             <div>
-                <span class="role-badge" data-i18n="ownerAccount">Owner Account</span>
+                <span class="role-badge" id="role-badge-text" data-i18n="ownerAccount">Owner Account</span>
                 <h2 class="greeting" data-i18n="greeting">Namaste, Ram Bhai</h2>
                 <p class="date-display">16 Aug 2026</p>
             </div>
@@ -271,6 +294,73 @@
             <div id="customer-history-list" class="list-card"></div>
         </main>
 
+        <!-- CUSTOMER USAGE VIEW -->
+        <main id="view-customer-usage" class="main-view pb-nav customer-only">
+            <header style="margin-bottom: 16px;">
+                <span class="role-badge"
+                    style="background: rgba(52,199,89,0.1); color: var(--ios-green);">Customer</span>
+                <h2 class="greeting" style="margin-top: 4px;">My Water Usage</h2>
+            </header>
+
+            <div class="stats-grid" style="margin-bottom: 16px;">
+                <div class="stat-card">
+                    <span class="stat-label">Total Hours</span>
+                    <span class="stat-value text-blue" id="cust-total-hrs">0 <small>Hrs</small></span>
+                </div>
+                <div class="stat-card outline-red">
+                    <span class="stat-label">Total Due</span>
+                    <span class="stat-value text-red" id="cust-total-due-display">₹0</span>
+                </div>
+                <div class="stat-card">
+                    <span class="stat-label">Total Paid</span>
+                    <span class="stat-value text-green" id="cust-total-paid-display">₹0</span>
+                </div>
+                <div class="stat-card">
+                    <span class="stat-label">Linked Tubewell</span>
+                    <span class="stat-value" id="linked-tubewell-name" style="font-size: 14px;">-</span>
+                </div>
+            </div>
+
+            <h3 class="section-title">Usage History</h3>
+            <div class="list-card" id="customer-usage-list">
+                <div class="list-item empty-state">
+                    <div class="item-info">
+                        <p>No usage yet</p>
+                    </div>
+                </div>
+            </div>
+
+            <div style="margin-top: 24px; text-align: center;">
+                <p style="color: var(--ios-gray); font-size: 14px; margin-bottom: 12px;">Own a tubewell now?</p>
+                <button class="btn-primary" onclick="becomeOwner()" style="width: auto; padding: 12px 24px;">Become an
+                    Owner</button>
+            </div>
+        </main>
+
+        <!-- CUSTOMER TUBEWELL INFO VIEW -->
+        <main id="view-my-tubewell" class="main-view pb-nav customer-only">
+            <h3 class="section-title">My Tubewell</h3>
+            <div class="list-card" id="my-tubewell-info">
+                <div class="list-item empty-state">
+                    <div class="item-info">
+                        <p>You are linked to a tubewell as a customer.</p>
+                    </div>
+                </div>
+            </div>
+        </main>
+
+        <!-- CUSTOMER PAYMENTS VIEW -->
+        <main id="view-my-payments" class="main-view pb-nav customer-only">
+            <h3 class="section-title">My Payments</h3>
+            <div class="list-card" id="customer-payments-list">
+                <div class="list-item empty-state">
+                    <div class="item-info">
+                        <p>No payments yet</p>
+                    </div>
+                </div>
+            </div>
+        </main>
+
         <!-- BOTTOM NAVIGATION -->
         <nav class="bottom-nav">
             <a href="#" class="nav-item active" data-target="view-home">
@@ -330,8 +420,8 @@
                     <div id="profile-view-mode">
                         <h4 id="profile-name-display" style="font-size: 20px; font-weight: 600; margin-bottom: 4px;">Ram
                             Bhai</h4>
-                        <p style="color: var(--ios-gray); font-size: 14px;" id="profile-business-display">Ram Singh
-                            Tubewell</p>
+                        <p style="color: var(--ios-gray); font-size: 14px;" id="profile-business-display">Village XYZ
+                        </p>
                         <span class="role-badge mt-2" style="display: inline-block;">Owner</span>
                         <div class="mt-3">
                             <button class="btn-small" onclick="toggleProfileEdit(true)" data-i18n="editProfile">Edit
@@ -344,7 +434,7 @@
                             <input type="text" id="edit-profile-name" value="Ram Bhai">
                         </div>
                         <div class="form-group">
-                            <label data-i18n="businessName">Business Name</label>
+                            <label data-i18n="villageLocation">Village / Location</label>
                             <input type="text" id="edit-profile-business" value="Ram Singh Tubewell">
                         </div>
                         <button class="btn-primary" onclick="saveProfile()" data-i18n="saveChanges">Save

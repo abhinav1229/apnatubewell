@@ -18,34 +18,22 @@ const analytics = getAnalytics(app);
 const db = getFirestore(app);
 const auth = getAuth(app);
 let currentLang = 'en';
-
-/* --- AUTO LOGIN CHECK --- */
-const isLoggedIn = localStorage.getItem('is_logged_in');
-const ownerInfo = localStorage.getItem('owner_info');
-
-if (isLoggedIn === 'true') {
-    document.getElementById('login-screen').classList.remove('active');
-    document.getElementById('basic-info-screen').classList.remove('active');
-
-    if (ownerInfo) {
-        document.getElementById('app-shell').style.display = 'block';
-    } else {
-        document.getElementById('basic-info-screen').classList.add('active');
-    }
-}
+let userRole = localStorage.getItem('user_role') || 'owner';
 
 window.logout = function () {
     localStorage.removeItem('is_logged_in');
     localStorage.removeItem('user_phone');
+    localStorage.removeItem('user_role');
     localStorage.removeItem('owner_info');
     localStorage.removeItem('profile_name');
     localStorage.removeItem('profile_business');
     location.reload();
 }
 
-// Prevent flash of login screen
-if (isLoggedIn === 'true') {
-    document.getElementById('login-screen').style.display = 'none';
+window.selectRole = function (role) {
+    userRole = role;
+    document.getElementById('role-owner').classList.toggle('active', role === 'owner');
+    document.getElementById('role-customer').classList.toggle('active', role === 'customer');
 }
 
 /* --- TOAST NOTIFICATIONS --- */
@@ -101,6 +89,7 @@ const locales = {
         myTubewells: "My Tubewells", add: "Add", noTubewells: "No tubewells added yet.",
         tubewellName: "Tubewell Name", location: "Location / Village", ratePerHour: "Rate per Hour (₹)",
         addTubewell: "Add New Tubewell", addTubewellBtn: "Add Tubewell",
+        villageLocation: "Village / Location",
     },
     hi: {
         appTitle: "अपना ट्यूबवेल",
@@ -121,12 +110,9 @@ const locales = {
         myTubewells: "मेरे ट्यूबवेल", add: "जोड़ें", noTubewells: "अभी तक कोई ट्यूबवेल नहीं जोड़ा गया।",
         tubewellName: "ट्यूबवेल का नाम", location: "गांव / स्थान", ratePerHour: "प्रति घंटा दर (₹)",
         addTubewell: "नया ट्यूबवेल जोड़ें", addTubewellBtn: "ट्यूबवेल जोड़ें",
+        villageLocation: "गांव / स्थान",
     }
 };
-
-// Apply saved language
-const savedLang = localStorage.getItem('app_lang') || 'en';
-setLanguage(savedLang);
 
 function setLanguage(lang) {
     currentLang = lang;
@@ -179,17 +165,25 @@ document.getElementById('send-otp-btn').addEventListener('click', () => {
     if (phoneInput.length === 10) {
         localStorage.setItem('is_logged_in', 'true');
         localStorage.setItem('user_phone', phoneInput);
+        localStorage.setItem('user_role', userRole);
         showToast(currentLang === 'en' ? "Login Successful!" : "लॉगिन सफल!", "success");
 
         document.getElementById('login-screen').style.display = 'none';
         document.getElementById('login-screen').classList.remove('active');
 
         const ownerInfo = localStorage.getItem('owner_info');
-        if (ownerInfo) {
-            document.getElementById('app-shell').style.display = 'block';
-            loadOwnerData();
-        } else {
+
+        if (userRole === 'customer') {
             document.getElementById('basic-info-screen').classList.add('active');
+        } else {
+            // Owner flow
+            if (ownerInfo) {
+                document.getElementById('app-shell').style.display = 'block';
+                loadOwnerData();
+                setupOwnerUI();
+            } else {
+                document.getElementById('basic-info-screen').classList.add('active');
+            }
         }
     } else {
         showToast(currentLang === 'en' ? "Enter valid 10 digit number" : "सही 10 अंकों का नंबर दर्ज करें", "error");
@@ -204,16 +198,32 @@ document.getElementById('save-basic-info-btn').addEventListener('click', () => {
         showToast(currentLang === 'en' ? "Please fill all fields" : "सभी फील्ड भरें", "error");
         return;
     }
-    const ownerData = { name, village, phone: document.getElementById('login-phone').value };
-    localStorage.setItem('owner_info', JSON.stringify(ownerData));
+
+    const userData = { name, village, phone: document.getElementById('login-phone').value };
+    localStorage.setItem('user_info', JSON.stringify(userData)); // Generic user info, not owner-specific
+
     document.getElementById('basic-info-screen').classList.remove('active');
     document.getElementById('app-shell').style.display = 'block';
-    loadOwnerData();
+
+    // Load greeting for both roles
+    document.querySelector('.greeting').innerText = (currentLang === 'en' ? 'Namaste, ' : 'नमस्ते, ') + name;
+    document.getElementById('profile-name-display').innerText = name;
+    document.getElementById('edit-profile-name').value = name;
+
+    if (userRole === 'customer') {
+        document.getElementById('app-shell').style.display = 'block';
+        setupCustomerUI();
+    } else {
+        localStorage.setItem('owner_info', JSON.stringify(userData)); // Only set owner_info for owners
+        loadOwnerData();
+        setupOwnerUI();
+    }
+
     showToast(currentLang === 'en' ? "Welcome!" : "स्वागत है!", "success");
 });
 
 function loadOwnerData() {
-    const data = JSON.parse(localStorage.getItem('owner_info') || '{}');
+    const data = JSON.parse(localStorage.getItem('owner_info') || localStorage.getItem('user_info') || '{}');
     if (data.name) {
         document.querySelector('.greeting').innerText = (currentLang === 'en' ? 'Namaste, ' : 'नमस्ते, ') + data.name;
         document.getElementById('profile-name-display').innerText = data.name;
@@ -221,8 +231,9 @@ function loadOwnerData() {
     }
     const tw = JSON.parse(localStorage.getItem('tubewell_data') || '{}');
     if (tw.name) {
-        document.getElementById('profile-business-display').innerText = tw.name;
-        document.getElementById('edit-profile-business').value = tw.name;
+        const village = data.village || 'Village XYZ';
+        document.getElementById('profile-business-display').innerText = village;
+        document.getElementById('edit-profile-business').value = village;
     }
 }
 
@@ -240,7 +251,7 @@ window.saveProfile = function () {
         return;
     }
     localStorage.setItem('profile_name', name);
-    localStorage.setItem('profile_business', business);
+    localStorage.setItem('profile_village', business);
     document.getElementById('profile-name-display').innerText = name;
     document.querySelector('.greeting').innerText = (currentLang === 'en' ? 'Namaste, ' : 'नमस्ते, ') + name;
     document.getElementById('profile-business-display').innerText = business;
@@ -441,22 +452,6 @@ window.savePayment = function () {
 
 // Set default payment date
 document.getElementById('payment-date').value = new Date().toISOString().split('T')[0];
-
-/* --- INIT --- */
-const savedOwner = localStorage.getItem('owner_info');
-if (savedOwner) {
-    const data = JSON.parse(savedOwner);
-    document.getElementById('profile-name-display').innerText = data.name;
-    document.querySelector('.greeting').innerText = (currentLang === 'en' ? 'Namaste, ' : 'नमस्ते, ') + data.name;
-    document.getElementById('edit-profile-name').value = data.name;
-}
-const savedTw = localStorage.getItem('tubewell_data');
-if (savedTw) {
-    const data = JSON.parse(savedTw);
-    document.getElementById('profile-business-display').innerText = data.name;
-    document.getElementById('edit-profile-business').value = data.name;
-}
-
 window.toggleCustomSelect = function () {
     document.getElementById('water-customer-wrapper').classList.toggle('active');
 }
@@ -519,4 +514,231 @@ function updateDateDisplay() {
     const month = locales[currentLang].months[now.getMonth()];
     const year = now.getFullYear();
     document.querySelector('.date-display').innerText = `${day} ${month} ${year}`;
+}
+
+/* --- ROLE-BASED UI SETUP --- */
+function setupOwnerUI() {
+    // Restore owner nav
+    const nav = document.querySelector('.bottom-nav');
+    nav.innerHTML = `
+        <div class="nav-item active" data-target="view-home">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>
+                <polyline points="9 22 9 12 15 12 15 22"/>
+            </svg>
+            <span data-i18n="navHome">Home</span>
+        </div>
+        <div class="nav-item" data-target="view-customers">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/>
+                <circle cx="9" cy="7" r="4"/>
+                <path d="M23 21v-2a4 4 0 0 0-3-3.87"/>
+                <path d="M16 3.13a4 4 0 0 1 0 7.75"/>
+            </svg>
+            <span data-i18n="navCustomers">Customers</span>
+        </div>
+        <div class="nav-item" data-target="view-bahi">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/>
+                <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/>
+            </svg>
+            <span data-i18n="navBahi">Bahi</span>
+        </div>
+        <div class="nav-item" data-target="view-tubewells">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/>
+            </svg>
+            <span>Tubewells</span>
+        </div>
+    `;
+
+    // Re-attach nav listeners
+    document.querySelectorAll('.bottom-nav .nav-item').forEach(item => {
+        item.addEventListener('click', (e) => {
+            e.preventDefault();
+            document.querySelectorAll('.bottom-nav .nav-item').forEach(n => n.classList.remove('active'));
+            item.classList.add('active');
+            const targetId = item.getAttribute('data-target');
+            document.querySelectorAll('.main-view').forEach(v => v.classList.remove('active'));
+            const target = document.getElementById(targetId);
+            if (target) target.classList.add('active');
+            window.scrollTo({ top: 0, behavior: 'smooth' });
+            if (targetId === 'view-tubewells') renderTubewells();
+        });
+    });
+
+    // Hide customer-only views completely
+    document.querySelectorAll('.customer-only').forEach(v => {
+        v.style.display = 'none';
+        v.classList.remove('active');
+    });
+
+    // Show only owner views, but keep them hidden until nav activates them
+    document.querySelectorAll('.main-view:not(.customer-only)').forEach(v => {
+        v.style.display = ''; // Reset to CSS default (none from .main-view rule)
+        v.classList.remove('active');
+    });
+
+    // Activate only home view
+    const homeView = document.getElementById('view-home');
+    if (homeView) homeView.classList.add('active');
+
+    // Set role badge
+    document.getElementById('role-badge-text').innerText = currentLang === 'en' ? 'Owner Account' : 'मालिक खाता';
+    document.getElementById('role-badge-text').style.background = 'rgba(0,122,255,0.1)';
+    document.getElementById('role-badge-text').style.color = 'var(--ios-blue)';
+}
+
+function setupCustomerUI() {
+    // Rebuild bottom nav for customer
+    const nav = document.querySelector('.bottom-nav');
+    nav.innerHTML = `
+        <div class="nav-item active" data-target="view-customer-usage">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/>
+            </svg>
+            <span>My Usage</span>
+        </div>
+        <div class="nav-item" data-target="view-my-tubewell">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>
+                <polyline points="9 22 9 12 15 12 15 22"/>
+            </svg>
+            <span>My Tubewell</span>
+        </div>
+        <div class="nav-item" data-target="view-my-payments">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <rect x="1" y="4" width="22" height="16" rx="2" ry="2"/>
+                <line x1="1" y1="10" x2="23" y2="10"/>
+            </svg>
+            <span>Payments</span>
+        </div>
+        <div class="nav-item" data-target="view-profile">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/>
+                <circle cx="12" cy="7" r="4"/>
+            </svg>
+            <span>Profile</span>
+        </div>
+    `;
+
+    // Re-attach nav listeners
+    document.querySelectorAll('.bottom-nav .nav-item').forEach(item => {
+        item.addEventListener('click', (e) => {
+            e.preventDefault();
+            document.querySelectorAll('.bottom-nav .nav-item').forEach(n => n.classList.remove('active'));
+            item.classList.add('active');
+            const targetId = item.getAttribute('data-target');
+            document.querySelectorAll('.main-view').forEach(v => v.classList.remove('active'));
+            const target = document.getElementById(targetId);
+            if (target) target.classList.add('active');
+            window.scrollTo({ top: 0, behavior: 'smooth' });
+        });
+    });
+
+    // Hide owner views
+    document.querySelectorAll('.main-view:not(.customer-only)').forEach(v => {
+        v.style.display = 'none';
+        v.classList.remove('active');
+    });
+
+    // Show customer views (reset inline display so CSS .active works)
+    document.querySelectorAll('.customer-only').forEach(v => {
+        v.style.display = ''; // Reset to CSS default
+        v.classList.remove('active');
+    });
+
+    // Activate only customer usage view
+    const custDash = document.getElementById('view-customer-usage');
+    if (custDash) custDash.classList.add('active');
+
+    // Set role badge
+    document.getElementById('role-badge-text').innerText = currentLang === 'en' ? 'Customer' : 'ग्राहक';
+    document.getElementById('role-badge-text').style.background = 'rgba(52,199,89,0.1)';
+    document.getElementById('role-badge-text').style.color = 'var(--ios-green)';
+}
+window.becomeOwner = function () {
+    if (!confirm(currentLang === 'en' ? "Switch to owner mode? Your customer data will be preserved." : "मालिक मोड में स्विच करें? आपका ग्राहक डेटा सुरक्षित रहेगा।")) {
+        return;
+    }
+    userRole = 'owner';
+    localStorage.setItem('user_role', 'owner');
+
+    // Hide customer UI, show basic info for owner onboarding
+    document.getElementById('app-shell').style.display = 'none';
+    document.querySelectorAll('.main-view').forEach(v => v.classList.remove('active'));
+    document.querySelectorAll('.customer-only').forEach(v => v.style.display = 'none');
+
+    document.getElementById('basic-info-screen').classList.add('active');
+    showToast(currentLang === 'en' ? "Complete your owner profile" : "अपना मालिक प्रोफाइल पूरा करें", "info");
+}
+
+
+/* --- INIT & AUTO LOGIN --- */
+const savedOwner = localStorage.getItem('owner_info');
+if (savedOwner) {
+    const data = JSON.parse(savedOwner);
+    document.getElementById('profile-name-display').innerText = data.name;
+    document.querySelector('.greeting').innerText = (currentLang === 'en' ? 'Namaste, ' : 'नमस्ते, ') + data.name;
+    document.getElementById('edit-profile-name').value = data.name;
+}
+const savedUserInfo = localStorage.getItem('user_info');
+if (savedUserInfo) {
+    const data = JSON.parse(savedUserInfo);
+    if (data.village) {
+        document.getElementById('profile-business-display').innerText = data.village;
+        document.getElementById('edit-profile-business').value = data.village;
+    }
+}
+
+const savedLang = localStorage.getItem('app_lang') || 'en';
+setLanguage(savedLang);
+
+/* --- AUTO LOGIN CHECK --- */
+const isLoggedIn = localStorage.getItem('is_logged_in');
+const userInfo = localStorage.getItem('user_info');
+const ownerInfo = localStorage.getItem('owner_info');
+const savedRole = localStorage.getItem('user_role') || 'owner';
+userRole = savedRole;
+
+if (isLoggedIn === 'true') {
+    document.getElementById('login-screen').classList.remove('active');
+    document.getElementById('login-screen').style.display = 'none';
+    document.getElementById('basic-info-screen').classList.remove('active');
+
+    if (userInfo) {
+        const data = JSON.parse(userInfo);
+        document.querySelector('.greeting').innerText = (currentLang === 'en' ? 'Namaste, ' : 'नमस्ते, ') + data.name;
+        document.getElementById('profile-name-display').innerText = data.name;
+        document.getElementById('edit-profile-name').value = data.name;
+
+        if (userRole === 'customer') {
+            document.getElementById('role-badge-text').innerText = currentLang === 'en' ? 'Customer' : 'ग्राहक';
+            document.getElementById('role-badge-text').style.background = 'rgba(52,199,89,0.1)';
+            document.getElementById('role-badge-text').style.color = 'var(--ios-green)';
+            document.getElementById('app-shell').style.display = 'block';
+            setupCustomerUI();
+        } else {
+            document.getElementById('role-badge-text').innerText = currentLang === 'en' ? 'Owner Account' : 'मालिक खाता';
+            document.getElementById('role-badge-text').style.background = 'rgba(0,122,255,0.1)';
+            document.getElementById('role-badge-text').style.color = 'var(--ios-blue)';
+            if (ownerInfo) {
+                document.getElementById('app-shell').style.display = 'block';
+                loadOwnerData();
+                setupOwnerUI();
+            } else {
+                document.getElementById('basic-info-screen').classList.add('active');
+            }
+        }
+    } else {
+        document.getElementById('basic-info-screen').classList.add('active');
+    }
+}
+
+const savedUser = localStorage.getItem('user_info');
+if (savedUser) {
+    const data = JSON.parse(savedUser);
+    document.getElementById('profile-name-display').innerText = data.name;
+    document.querySelector('.greeting').innerText = (currentLang === 'en' ? 'Namaste, ' : 'नमस्ते, ') + data.name;
+    document.getElementById('edit-profile-name').value = data.name;
 }

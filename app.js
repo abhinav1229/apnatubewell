@@ -17,6 +17,7 @@ const app = initializeApp(firebaseConfig);
 const analytics = getAnalytics(app);
 const db = getFirestore(app);
 const auth = getAuth(app);
+let currentLang = 'en';
 
 /* --- AUTO LOGIN CHECK --- */
 const isLoggedIn = localStorage.getItem('is_logged_in');
@@ -92,6 +93,14 @@ const locales = {
         customer: "Customer", startTime: "Start Time", endTime: "End Time", duration: "Duration", rate: "Rate", totalAmount: "Total Amount", save: "Save Record",
         noPendingPayments: "No pending payments",
         noCustomers: "Add customers to get started",
+        months: ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"],
+        hrs: "Hrs",
+        myProfile: "My Profile", darkMode: "Dark Mode", logout: "Logout", editProfile: "Edit Profile",
+        saveChanges: "Save Changes", cancel: "Cancel", name: "Name", businessName: "Business Name",
+        bahiSubtitle: "Select a customer to view their complete ledger.",
+        myTubewells: "My Tubewells", add: "Add", noTubewells: "No tubewells added yet.",
+        tubewellName: "Tubewell Name", location: "Location / Village", ratePerHour: "Rate per Hour (₹)",
+        addTubewell: "Add New Tubewell", addTubewellBtn: "Add Tubewell",
     },
     hi: {
         appTitle: "अपना ट्यूबवेल",
@@ -104,10 +113,20 @@ const locales = {
         customer: "ग्राहक चुनें", startTime: "शुरू का समय", endTime: "बंद का समय", duration: "कुल समय", rate: "रेट", totalAmount: "कुल राशि", save: "सेव करें",
         noPendingPayments: "कोई बाकी भुगतान नहीं",
         noCustomers: "शुरू करने के लिए ग्राहक जोड़ें",
+        months: ["जनवरी", "फरवरी", "मार्च", "अप्रैल", "मई", "जून", "जुलाई", "अगस्त", "सितंबर", "अक्टूबर", "नवंबर", "दिसंबर"],
+        hrs: "घंटे",
+        myProfile: "मेरी प्रोफाइल", darkMode: "डार्क मोड", logout: "लॉग आउट", editProfile: "प्रोफाइल एडिट करें",
+        saveChanges: "बदलाव सेव करें", cancel: "रद्द करें", name: "नाम", businessName: "व्यवसाय का नाम",
+        bahiSubtitle: "पूरी बही-खाता देखने के लिए ग्राहक चुनें।",
+        myTubewells: "मेरे ट्यूबवेल", add: "जोड़ें", noTubewells: "अभी तक कोई ट्यूबवेल नहीं जोड़ा गया।",
+        tubewellName: "ट्यूबवेल का नाम", location: "गांव / स्थान", ratePerHour: "प्रति घंटा दर (₹)",
+        addTubewell: "नया ट्यूबवेल जोड़ें", addTubewellBtn: "ट्यूबवेल जोड़ें",
     }
 };
 
-let currentLang = 'en';
+// Apply saved language
+const savedLang = localStorage.getItem('app_lang') || 'en';
+setLanguage(savedLang);
 
 function setLanguage(lang) {
     currentLang = lang;
@@ -127,6 +146,9 @@ function setLanguage(lang) {
     if (document.getElementById('btn-en')) document.getElementById('btn-en').classList.toggle('active', lang === 'en');
     if (document.getElementById('btn-hi')) document.getElementById('btn-hi').classList.toggle('active', lang === 'hi');
     document.getElementById('current-lang-label').innerText = lang.toUpperCase();
+
+    localStorage.setItem('app_lang', lang);
+    updateDateDisplay();
 }
 
 document.getElementById('login-en').addEventListener('click', () => setLanguage('en'));
@@ -255,7 +277,7 @@ function calculateWaterUsage() {
     if (endDate < startDate) endDate.setDate(endDate.getDate() + 1);
     const diffInMs = endDate - startDate;
     const diffInHours = diffInMs / (1000 * 60 * 60);
-    calcDuration.innerText = `${diffInHours.toFixed(2)} Hrs`;
+    calcDuration.innerText = `${diffInHours.toFixed(2)} ${locales[currentLang].hrs}`;
     const rate = getRate();
     const totalAmount = diffInHours * rate;
     calcTotal.innerText = `₹${Math.round(totalAmount)}`;
@@ -311,7 +333,7 @@ function renderTubewells() {
         </div>
     `).join('');
     if (all.length === 0) {
-        list.innerHTML = '<div class="list-item"><div class="item-info"><p style="color: var(--ios-gray);">No tubewells added yet.</p></div></div>';
+        list.innerHTML = `<div class="list-item"><div class="item-info"><p style="color: var(--ios-gray);">${locales[currentLang].noTubewells}</p></div></div>`;
     }
 }
 
@@ -349,7 +371,7 @@ window.openCustomerDetail = function (id) {
         historyList.innerHTML = '<div class="list-item"><div class="item-info"><p style="color: var(--ios-gray);">No entries yet.</p></div></div>';
         document.getElementById('cust-total-due').innerText = '₹0';
         document.getElementById('cust-total-paid').innerText = '₹0';
-        document.getElementById('cust-total-hours').innerHTML = '0 <small>Hrs</small>';
+        document.getElementById('cust-total-hours').innerHTML = totalHours.toFixed(1) + ` <small>${locales[currentLang].hrs}</small>`;
         document.getElementById('cust-last-entry').innerText = '-';
         return;
     }
@@ -479,6 +501,7 @@ window.switchLang = function (lang) {
 
     document.getElementById('lang-menu').style.display = 'none';
     showToast(currentLang === 'en' ? "Language changed" : "भाषा बदल गई", "success");
+    localStorage.setItem('app_lang', lang);
 }
 
 // Close lang menu when clicking outside
@@ -489,3 +512,11 @@ document.addEventListener('click', (e) => {
         menu.style.display = 'none';
     }
 });
+
+function updateDateDisplay() {
+    const now = new Date();
+    const day = now.getDate();
+    const month = locales[currentLang].months[now.getMonth()];
+    const year = now.getFullYear();
+    document.querySelector('.date-display').innerText = `${day} ${month} ${year}`;
+}

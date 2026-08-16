@@ -17,8 +17,34 @@ const app = initializeApp(firebaseConfig);
 const analytics = getAnalytics(app);
 const db = getFirestore(app);
 const auth = getAuth(app);
+const isMockMode = true; // Set to false when you enable real Firebase Auth
 let currentLang = 'en';
 let userRole = localStorage.getItem('user_role') || 'owner';
+
+async function safeSetDoc(docRef, data) {
+    if (isMockMode) return Promise.resolve();
+    return setDoc(docRef, data);
+}
+
+async function safeUpdateDoc(docRef, data) {
+    if (isMockMode) return Promise.resolve();
+    return updateDoc(docRef, data);
+}
+
+async function safeAddDoc(collectionRef, data) {
+    if (isMockMode) return Promise.resolve({ id: 'mock_' + Date.now() });
+    return addDoc(collectionRef, data);
+}
+
+async function safeDeleteDoc(docRef) {
+    if (isMockMode) return Promise.resolve();
+    return deleteDoc(docRef);
+}
+
+function safeServerTimestamp() {
+    return isMockMode ? new Date().toISOString() : serverTimestamp();
+}
+
 
 window.logout = function () {
     stopListeners();
@@ -134,7 +160,7 @@ window.addCustomerToQueue = async function (customerId) {
         showToast(currentLang === 'en' ? 'Already in queue' : 'पहले से कतार में है', 'info');
         return;
     }
-    await addDoc(queueRef, { ownerId: ownerUid, customerId, addedAt: serverTimestamp() });
+    await safeAddDoc(queueRef, { ownerId: ownerUid, customerId, addedAt: safeServerTimestamp() });
     showToast(currentLang === 'en' ? 'Added to queue' : 'कतार में जोड़ दिया गया', 'success');
 };
 
@@ -143,7 +169,7 @@ window.removeFromQueue = async function (customerId) {
     const queueRef = collection(db, 'queues');
     const q = query(queueRef, where('ownerId', '==', ownerUid), where('customerId', '==', customerId));
     const snapshot = await getDocs(q);
-    snapshot.forEach(async (d) => { await deleteDoc(doc(db, 'queues', d.id)); });
+    snapshot.forEach(async (d) => { await safeDeleteDoc(doc(db, 'queues', d.id)); });
     showToast(currentLang === 'en' ? 'Removed from queue' : 'कतार से हटा दिया गया', 'success');
 };
 
@@ -165,10 +191,10 @@ window.startWaterSession = async function () {
     const queueRef = collection(db, 'queues');
     const q = query(queueRef, where('ownerId', '==', ownerUid), where('customerId', '==', customerId));
     const queueSnap = await getDocs(q);
-    queueSnap.forEach(async (d) => { await deleteDoc(doc(db, 'queues', d.id)); });
+    queueSnap.forEach(async (d) => { await safeDeleteDoc(doc(db, 'queues', d.id)); });
 
     const startTime = new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false });
-    await updateDoc(twRef, {
+    await safeUpdateDoc(twRef, {
         status: 'running',
         currentCustomer: customerId,
         currentStartTime: startTime
@@ -206,7 +232,7 @@ window.stopWaterSession = async function () {
 
     // Save usage to Firestore
     const usageRef = doc(collection(db, 'water_usage'));
-    await setDoc(usageRef, {
+    await safeSetDoc(usageRef, {
         business_id: ownerUid,
         customer_id: tw.currentCustomer,
         start_time: startTime,
@@ -217,11 +243,11 @@ window.stopWaterSession = async function () {
         status: 'pending',
         type: 'water',
         date: today,
-        created_at: serverTimestamp()
+        created_at: safeServerTimestamp()
     });
 
     // Reset tubewell in Firestore
-    await updateDoc(twRef, {
+    await safeUpdateDoc(twRef, {
         status: 'stopped',
         currentCustomer: null,
         currentStartTime: null
@@ -255,7 +281,7 @@ window.setMaintenanceMode = async function (active) {
         showToast(currentLang === 'en' ? 'Stop water first' : 'पहले पानी बंद करें', 'error');
         return;
     }
-    await updateDoc(twRef, {
+    await safeUpdateDoc(twRef, {
         status: active ? 'work_in_progress' : 'stopped',
         currentCustomer: active ? null : tw.currentCustomer,
         currentStartTime: active ? null : tw.currentStartTime
@@ -292,10 +318,10 @@ window.addNewCustomer = async function () {
     }
 
     const id = 'cust_' + Date.now();
-    const customerData = { id, name, phone, tubewellId, ownerId: ownerUid, ownerPhone, linkedAt: serverTimestamp(), customerUid };
+    const customerData = { id, name, phone, tubewellId, ownerId: ownerUid, ownerPhone, linkedAt: safeServerTimestamp(), customerUid };
 
     // Save to Firestore
-    await setDoc(doc(db, 'customers', id), customerData);
+    await safeSetDoc(doc(db, 'customers', id), customerData);
 
     // Also save to local
     const customers = getCustomers();
@@ -510,25 +536,25 @@ window.sendLinkRequest = async function () {
     }
 
     // Create request
-    await addDoc(reqRef, {
+    await safeAddDoc(reqRef, {
         ownerUid,
         ownerPhone: phone,
         customerUid,
         customerPhone,
         customerName: userInfo.name || '',
         status: 'pending',
-        createdAt: serverTimestamp()
+        createdAt: safeServerTimestamp()
     });
 
     // Create notification for owner
-    await addDoc(collection(db, 'notifications'), {
+    await safeAddDoc(collection(db, 'notifications'), {
         toUid: ownerUid,
         type: 'link_request',
         title: currentLang === 'en' ? 'New link request' : 'नया लिंक अनुरोध',
         body: (userInfo.name || customerPhone) + (currentLang === 'en' ? ' wants to connect' : ' जुड़ना चाहता है'),
         requestData: { customerUid, customerPhone, customerName: userInfo.name || '' },
         read: false,
-        createdAt: serverTimestamp()
+        createdAt: safeServerTimestamp()
     });
 
     localStorage.setItem('pending_request_owner', JSON.stringify({ ownerUid, ownerPhone: phone, status: 'pending' }));
@@ -545,13 +571,13 @@ window.unlinkTubewell = async function () {
         const linksRef = collection(db, 'customer_links');
         const q = query(linksRef, where('customerUid', '==', customerUid), where('ownerUid', '==', link.ownerUid));
         const snap = await getDocs(q);
-        snap.forEach(async (d) => { await deleteDoc(doc(db, 'customer_links', d.id)); });
+        snap.forEach(async (d) => { await safeDeleteDoc(doc(db, 'customer_links', d.id)); });
 
         // Also update the link_requests doc status to rejected so owner knows
         const reqRef = collection(db, 'link_requests');
         const rq = query(reqRef, where('ownerUid', '==', link.ownerUid), where('customerUid', '==', customerUid));
         const rsnap = await getDocs(rq);
-        rsnap.forEach(async (d) => { await updateDoc(doc(db, 'link_requests', d.id), { status: 'rejected' }); });
+        rsnap.forEach(async (d) => { await safeUpdateDoc(doc(db, 'link_requests', d.id), { status: 'rejected' }); });
     }
     localStorage.removeItem('customer_link');
     localStorage.removeItem('pending_request_owner');
@@ -609,11 +635,11 @@ window.acceptLinkRequest = async function (requestId, customerUid, customerPhone
     const ownerPhone = localStorage.getItem('user_phone');
 
     // Update request status
-    await updateDoc(doc(db, 'link_requests', requestId), { status: 'accepted' });
+    await safeUpdateDoc(doc(db, 'link_requests', requestId), { status: 'accepted' });
 
     // Add to customers collection
     const custId = 'cust_' + Date.now();
-    await setDoc(doc(db, 'customers', custId), {
+    await safeSetDoc(doc(db, 'customers', custId), {
         id: custId,
         name: customerName || customerPhone,
         phone: customerPhone,
@@ -621,11 +647,11 @@ window.acceptLinkRequest = async function (requestId, customerUid, customerPhone
         tubewellId: 'primary',
         ownerId: ownerUid,
         ownerPhone: ownerPhone,
-        linkedAt: serverTimestamp()
+        linkedAt: safeServerTimestamp()
     });
 
     // Create customer_link doc
-    await setDoc(doc(db, 'customer_links', customerUid + '_' + ownerUid), {
+    await safeSetDoc(doc(db, 'customer_links', customerUid + '_' + ownerUid), {
         customerUid,
         customerPhone,
         customerName: customerName || '',
@@ -633,18 +659,18 @@ window.acceptLinkRequest = async function (requestId, customerUid, customerPhone
         ownerPhone,
         tubewellId: 'primary',
         status: 'linked',
-        linkedAt: serverTimestamp()
+        linkedAt: safeServerTimestamp()
     });
 
     // Notify customer
-    await addDoc(collection(db, 'notifications'), {
+    await safeAddDoc(collection(db, 'notifications'), {
         toUid: customerUid,
         type: 'request_accepted',
         title: currentLang === 'en' ? 'Request accepted' : 'अनुरोध स्वीकार',
         body: locales[currentLang].requestAcceptedMsg,
         requestData: { ownerUid: ownerUid, ownerPhone: ownerPhone },
         read: false,
-        createdAt: serverTimestamp()
+        createdAt: safeServerTimestamp()
     });
 
     renderLinkRequests();
@@ -653,17 +679,17 @@ window.acceptLinkRequest = async function (requestId, customerUid, customerPhone
 };
 
 window.rejectLinkRequest = async function (requestId, customerUid) {
-    await updateDoc(doc(db, 'link_requests', requestId), { status: 'rejected' });
+    await safeUpdateDoc(doc(db, 'link_requests', requestId), { status: 'rejected' });
 
     // Notify customer
-    await addDoc(collection(db, 'notifications'), {
+    await safeAddDoc(collection(db, 'notifications'), {
         toUid: customerUid,
         type: 'request_rejected',
         title: currentLang === 'en' ? 'Request rejected' : 'अनुरोध अस्वीकार',
         body: locales[currentLang].requestRejectedMsg,
         requestData: { ownerUid: ownerUid, ownerPhone: ownerPhone },
         read: false,
-        createdAt: serverTimestamp()
+        createdAt: safeServerTimestamp()
     });
 
     renderLinkRequests();
@@ -677,7 +703,7 @@ let unsubCustomers = null;
 
 window.startOwnerListeners = function () {
     const ownerUid = localStorage.getItem('user_uid');
-    if (!ownerUid) return;
+    if (!ownerUid || isMockMode) return;
 
     // Listen to tubewell changes
     const twRef = doc(db, 'tubewells', ownerUid + '_primary');
@@ -724,7 +750,7 @@ window.startOwnerListeners = function () {
 
 window.startCustomerListeners = function () {
     const customerUid = localStorage.getItem('user_uid');
-    if (!customerUid) return;
+    if (!customerUid || isMockMode) return;
 
     const link = JSON.parse(localStorage.getItem('customer_link') || 'null');
     const pending = JSON.parse(localStorage.getItem('pending_request_owner') || 'null');
@@ -781,7 +807,7 @@ window.startCustomerListeners = function () {
                     renderCustomerLinkedTubewell();
                     showToast(data.body, 'error');
                 }
-                await updateDoc(doc(db, 'notifications', change.doc.id), { read: true });
+                await safeUpdateDoc(doc(db, 'notifications', change.doc.id), { read: true });
             }
         });
     });
@@ -1033,69 +1059,146 @@ navItems.forEach(item => {
 
 /* --- LOGIN --- */
 let confirmationResult = null;
-
 document.getElementById('send-otp-btn').addEventListener('click', async () => {
     const phoneInput = document.getElementById('login-phone').value;
     if (phoneInput.length !== 10) {
         showToast(currentLang === 'en' ? "Enter valid 10 digit number" : "सही 10 अंकों का नंबर दर्ज करें", "error");
         return;
     }
-    const phone = '+91' + phoneInput;
 
-    try {
-        const verifier = new RecaptchaVerifier(auth, 'recaptcha-container', { size: 'invisible' });
-        confirmationResult = await signInWithPhoneNumber(auth, phone, verifier);
-        document.getElementById('phone-auth-section').style.display = 'none';
-        document.getElementById('otp-verify-section').style.display = 'block';
-        showToast(currentLang === 'en' ? "OTP Sent!" : "OTP भेज दिया गया!", "success");
-    } catch (e) {
-        console.error(e);
-        showToast(currentLang === 'en' ? "Failed to send OTP" : "OTP भेजने में विफल", "error");
+    localStorage.setItem('is_logged_in', 'true');
+    localStorage.setItem('user_phone', phoneInput);
+    localStorage.setItem('user_role', userRole);
+
+    // Always check Firestore first — phone is the source of truth
+    let existingUser = null;
+    let existingUid = null;
+
+    if (!isMockMode) {
+        try {
+            const usersRef = collection(db, 'users');
+            const q = query(usersRef, where('phone', '==', phoneInput), where('role', '==', userRole));
+            const snapshot = await getDocs(q);
+            if (!snapshot.empty) {
+                existingUser = snapshot.docs[0].data();
+                existingUid = snapshot.docs[0].id;
+            }
+        } catch (e) {
+            console.error('Firestore check failed:', e);
+        }
     }
-});
 
-document.getElementById('verify-otp-btn').addEventListener('click', async () => {
-    const otp = document.getElementById('otp-input').value;
-    if (!otp || otp.length !== 6) {
-        showToast(currentLang === 'en' ? "Enter 6-digit OTP" : "6 अंकों का OTP दर्ज करें", "error");
+    if (existingUser && existingUid) {
+        // Existing user found in Firestore — restore everything
+        localStorage.setItem('user_uid', existingUid);
+        localStorage.setItem('user_info', JSON.stringify({
+            name: existingUser.name,
+            village: existingUser.village,
+            phone: phoneInput
+        }));
+
+        if (userRole === 'owner') {
+            localStorage.setItem('owner_info', JSON.stringify({
+                name: existingUser.name,
+                village: existingUser.village,
+                phone: phoneInput
+            }));
+            // Also restore tubewell data
+            try {
+                const twDoc = await getDoc(doc(db, 'tubewells', existingUid + '_primary'));
+                if (twDoc.exists()) {
+                    localStorage.setItem('tubewell_data', JSON.stringify(twDoc.data()));
+                }
+            } catch (e) {
+                console.error('Tubewell restore failed:', e);
+            }
+        }
+
+        document.getElementById('login-screen').style.display = 'none';
+        document.getElementById('login-screen').classList.remove('active');
+        document.getElementById('app-shell').style.display = 'block';
+
+        if (userRole === 'customer') {
+            setupCustomerUI();
+        } else {
+            loadOwnerData();
+            setupOwnerUI();
+        }
+        showToast(currentLang === 'en' ? "Welcome back!" : "वापसी का स्वागत है!", "success");
         return;
     }
-    try {
-        const result = await confirmationResult.confirm(otp);
-        const user = result.user;
-        const phone = user.phoneNumber.replace('+91', '');
 
-        localStorage.setItem('is_logged_in', 'true');
-        localStorage.setItem('user_phone', phone);
-        localStorage.setItem('user_role', userRole);
-        localStorage.setItem('user_uid', user.uid);
+    // New user — generate UID and show onboarding
+    const newUid = 'user_' + Date.now();
+    localStorage.setItem('user_uid', newUid);
 
-        // Check if user exists in Firestore
-        const userDoc = await getDoc(doc(db, 'users', user.uid));
-        if (userDoc.exists()) {
-            const data = userDoc.data();
-            localStorage.setItem('user_info', JSON.stringify({ name: data.name, village: data.village, phone }));
-            if (data.role === 'owner') {
-                localStorage.setItem('owner_info', JSON.stringify({ name: data.name, village: data.village, phone }));
-                localStorage.setItem('tubewell_data', JSON.stringify(data.tubewell || {}));
-            }
-            showToast(currentLang === 'en' ? "Login Successful!" : "लॉगिन सफल!", "success");
-            document.getElementById('login-screen').style.display = 'none';
-            document.getElementById('login-screen').classList.remove('active');
-            document.getElementById('app-shell').style.display = 'block';
-            if (data.role === 'customer') setupCustomerUI();
-            else setupOwnerUI();
-        } else {
-            // New user - show basic info screen
-            document.getElementById('login-screen').style.display = 'none';
-            document.getElementById('login-screen').classList.remove('active');
-            document.getElementById('basic-info-screen').classList.add('active');
-        }
-    } catch (e) {
-        console.error(e);
-        showToast(currentLang === 'en' ? "Invalid OTP" : "गलत OTP", "error");
-    }
+    document.getElementById('login-screen').style.display = 'none';
+    document.getElementById('login-screen').classList.remove('active');
+    document.getElementById('basic-info-screen').classList.add('active');
 });
+
+// document.getElementById('send-otp-btn').addEventListener('click', async () => {
+//     const phoneInput = document.getElementById('login-phone').value;
+//     if (phoneInput.length !== 10) {
+//         showToast(currentLang === 'en' ? "Enter valid 10 digit number" : "सही 10 अंकों का नंबर दर्ज करें", "error");
+//         return;
+//     }
+//     const phone = '+91' + phoneInput;
+
+//     try {
+//         const verifier = new RecaptchaVerifier(auth, 'recaptcha-container', { size: 'invisible' });
+//         confirmationResult = await signInWithPhoneNumber(auth, phone, verifier);
+//         document.getElementById('phone-auth-section').style.display = 'none';
+//         document.getElementById('otp-verify-section').style.display = 'block';
+//         showToast(currentLang === 'en' ? "OTP Sent!" : "OTP भेज दिया गया!", "success");
+//     } catch (e) {
+//         console.error(e);
+//         showToast(currentLang === 'en' ? "Failed to send OTP" : "OTP भेजने में विफल", "error");
+//     }
+// });
+
+// document.getElementById('verify-otp-btn').addEventListener('click', async () => {
+//     const otp = document.getElementById('otp-input').value;
+//     if (!otp || otp.length !== 6) {
+//         showToast(currentLang === 'en' ? "Enter 6-digit OTP" : "6 अंकों का OTP दर्ज करें", "error");
+//         return;
+//     }
+//     try {
+//         const result = await confirmationResult.confirm(otp);
+//         const user = result.user;
+//         const phone = user.phoneNumber.replace('+91', '');
+
+//         localStorage.setItem('is_logged_in', 'true');
+//         localStorage.setItem('user_phone', phone);
+//         localStorage.setItem('user_role', userRole);
+//         localStorage.setItem('user_uid', user.uid);
+
+//         // Check if user exists in Firestore
+//         const userDoc = await getDoc(doc(db, 'users', user.uid));
+//         if (userDoc.exists()) {
+//             const data = userDoc.data();
+//             localStorage.setItem('user_info', JSON.stringify({ name: data.name, village: data.village, phone }));
+//             if (data.role === 'owner') {
+//                 localStorage.setItem('owner_info', JSON.stringify({ name: data.name, village: data.village, phone }));
+//                 localStorage.setItem('tubewell_data', JSON.stringify(data.tubewell || {}));
+//             }
+//             showToast(currentLang === 'en' ? "Login Successful!" : "लॉगिन सफल!", "success");
+//             document.getElementById('login-screen').style.display = 'none';
+//             document.getElementById('login-screen').classList.remove('active');
+//             document.getElementById('app-shell').style.display = 'block';
+//             if (data.role === 'customer') setupCustomerUI();
+//             else setupOwnerUI();
+//         } else {
+//             // New user - show basic info screen
+//             document.getElementById('login-screen').style.display = 'none';
+//             document.getElementById('login-screen').classList.remove('active');
+//             document.getElementById('basic-info-screen').classList.add('active');
+//         }
+//     } catch (e) {
+//         console.error(e);
+//         showToast(currentLang === 'en' ? "Invalid OTP" : "गलत OTP", "error");
+//     }
+// });
 
 /* --- BASIC INFO ONBOARDING --- */
 document.getElementById('save-basic-info-btn').addEventListener('click', async () => {
@@ -1107,11 +1210,16 @@ document.getElementById('save-basic-info-btn').addEventListener('click', async (
     }
 
     const phone = localStorage.getItem('user_phone');
-    const uid = localStorage.getItem('user_uid');
-    const userData = { name, village, phone, role: userRole, createdAt: serverTimestamp() };
+    let uid = localStorage.getItem('user_uid');
+    if (!uid) {
+        uid = 'user_' + Date.now();
+        localStorage.setItem('user_uid', uid);
+    }
 
-    // Save to Firestore
-    await setDoc(doc(db, 'users', uid), userData);
+    const userData = { name, village, phone, role: userRole, createdAt: safeServerTimestamp() };
+
+    // Save to Firestore (always — phone is the primary identifier)
+    await safeSetDoc(doc(db, 'users', uid), userData);
     localStorage.setItem('user_info', JSON.stringify({ name, village, phone }));
 
     document.getElementById('basic-info-screen').classList.remove('active');
@@ -1125,9 +1233,8 @@ document.getElementById('save-basic-info-btn').addEventListener('click', async (
         setupCustomerUI();
     } else {
         localStorage.setItem('owner_info', JSON.stringify({ name, village, phone }));
-        // Create default tubewell
         const defaultTw = { name: name + ' Tubewell', location: village, rate: 150, status: 'stopped', currentCustomer: null, currentStartTime: null, ownerId: uid };
-        await setDoc(doc(db, 'tubewells', uid + '_primary'), defaultTw);
+        await safeSetDoc(doc(db, 'tubewells', uid + '_primary'), defaultTw);
         localStorage.setItem('tubewell_data', JSON.stringify(defaultTw));
         setupOwnerUI();
     }
@@ -1163,7 +1270,7 @@ window.saveProfile = async function () {
         return;
     }
     const uid = localStorage.getItem('user_uid');
-    await updateDoc(doc(db, 'users', uid), { name, village });
+    await safeUpdateDoc(doc(db, 'users', uid), { name, village });
     localStorage.setItem('profile_name', name);
     localStorage.setItem('profile_village', village);
     document.getElementById('profile-name-display').innerText = name;
@@ -1231,9 +1338,9 @@ document.getElementById('save-water-btn').addEventListener('click', async () => 
             duration: duration,
             rate: getRate(),
             amount: amount,
-            created_at: serverTimestamp()
+            created_at: safeServerTimestamp()
         };
-        await addDoc(collection(db, "water_usage"), payload);
+        await safeAddDoc(collection(db, "water_usage"), payload);
 
         // Save to localStorage for dashboard
         const history = getWaterHistory();
@@ -1300,7 +1407,7 @@ window.addNewTubewell = async function () {
     localStorage.setItem('tubewell_extras', JSON.stringify(extras));
 
     // Save to Firestore
-    await setDoc(doc(db, 'tubewells', ownerUid + '_extra_' + extras.length), newTw);
+    await safeSetDoc(doc(db, 'tubewells', ownerUid + '_extra_' + extras.length), newTw);
 
     renderTubewells();
     closeModal('add-tubewell-modal');

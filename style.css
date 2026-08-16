@@ -1042,3 +1042,78 @@ body {
 .role-btn:active {
     transform: scale(0.97);
 }
+
+/* ===== DESKTOP PHONE FRAME ===== */
+@media (min-width: 768px) {
+    body {
+        display: flex;
+        justify-content: center;
+        align-items: flex-start;
+        min-height: 100vh;
+        background: #e8e8ed;
+        padding: 24px;
+    }
+
+    #app-shell,
+    #login-screen,
+    #basic-info-screen {
+        width: 414px;
+        min-height: calc(100vh - 48px);
+        position: relative;
+        border-radius: 24px;
+        overflow: visible;
+        box-shadow: 0 8px 40px rgba(0, 0, 0, 0.12),
+            0 0 0 1px rgba(0, 0, 0, 0.06);
+        background: var(--bg);
+    }
+
+    #login-screen,
+    #basic-info-screen {
+        display: none;
+    }
+
+    #login-screen.active,
+    #basic-info-screen.active {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+    }
+
+    .login-container {
+        min-height: auto;
+        width: 100%;
+        padding: 24px;
+    }
+
+    .bottom-nav {
+        width: 414px;
+        left: 50%;
+        transform: translateX(-50%);
+        border-radius: 0 0 24px 24px;
+        border-bottom: none;
+    }
+
+    .toast-container {
+        width: 380px;
+        left: 50%;
+        transform: translateX(-50%);
+    }
+
+    .modal-overlay {
+        width: 414px;
+        left: 50%;
+        transform: translateX(-50%);
+    }
+
+    .app-header {
+        border-radius: 24px 24px 0 0;
+    }
+
+    .lang-toggle {
+        right: calc(50% - 180px);
+    }
+
+    .lang-menu {
+        right: calc(50% - 180px);
+    }
+}

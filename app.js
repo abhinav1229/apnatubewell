@@ -153,14 +153,40 @@ window.renderQueue = function () {
     const queue = getQueue();
     const container = document.getElementById('queue-list-container');
     if (!container) return;
+
+    // Update queue count badge on status card
+    const countEl = document.getElementById('queue-count-badge');
+    if (countEl) {
+        countEl.innerText = queue.length > 0
+            ? (currentLang === 'en' ? (queue.length + ' in queue') : (queue.length + ' कतार में'))
+            : '';
+        countEl.style.display = queue.length > 0 ? 'inline-block' : 'none';
+    }
+
     if (queue.length === 0) {
         container.innerHTML = '<div class="list-item empty-state"><div class="item-info"><p data-i18n="noQueue">' + locales[currentLang].noQueue + '</p></div></div>';
+    } else {
+        container.innerHTML = queue.map((entry, idx) => {
+            const cust = getCustomerById(entry.customerId);
+            return '<div class="list-item"><div style="display:flex; align-items:center; gap:12px;"><span class="queue-num">' + (idx + 1) + '</span><div class="item-info"><h4>' + (cust ? cust.name : 'Unknown') + '</h4><p>' + (cust ? cust.phone : '') + (idx === 0 ? ' · <span style="color:var(--ios-green);">' + (currentLang === 'en' ? 'Next' : 'अगला') + '</span>' : '') + '</p></div></div><button class="btn-small" onclick="removeFromQueue(\'' + entry.customerId + '\')">' + locales[currentLang].removeFromQueue + '</button></div>';
+        }).join('');
+    }
+    renderNextInQueue();
+}
+
+window.renderNextInQueue = function () {
+    const el = document.getElementById('next-in-queue-section');
+    if (!el) return;
+    const queue = getQueue();
+    if (queue.length === 0) {
+        el.innerHTML = '<div class="list-item empty-state"><div class="item-info"><p style="color:var(--ios-gray); font-size:14px;">' + (currentLang === 'en' ? 'No one waiting in queue' : 'कतार में कोई नहीं') + '</p></div></div>';
         return;
     }
-    container.innerHTML = queue.map((entry, idx) => {
-        const cust = getCustomerById(entry.customerId);
-        return '<div class="list-item"><div style="display:flex; align-items:center; gap:12px;"><span class="queue-num">' + (idx + 1) + '</span><div class="item-info"><h4>' + (cust ? cust.name : 'Unknown') + '</h4><p>' + (cust ? cust.phone : '') + '</p></div></div><button class="btn-small" onclick="removeFromQueue(\'' + entry.customerId + '\')">' + locales[currentLang].removeFromQueue + '</button></div>';
-    }).join('');
+    const entry = queue[0];
+    const cust = getCustomerById(entry.customerId);
+    const name = cust ? cust.name : 'Unknown';
+    const phone = cust ? cust.phone : '';
+    el.innerHTML = '<div class="list-item" style="background:rgba(0,122,255,0.06);"><div style="display:flex; align-items:center; gap:12px; width:100%;"><span class="queue-num">1</span><div class="item-info"><h4>' + name + '</h4><p>' + phone + ' · ' + (currentLang === 'en' ? 'Next in queue' : 'कतार में अगला') + '</p></div></div></div>';
 }
 
 window.addCustomerToQueue = async function (customerId) {
@@ -173,6 +199,13 @@ window.addCustomerToQueue = async function (customerId) {
         return;
     }
     await safeAddDoc(queueRef, { ownerId: ownerUid, customerId, addedAt: safeServerTimestamp() });
+    // Update local queue
+    const localQ = getQueue();
+    if (!localQ.find(e => e.customerId === customerId)) {
+        localQ.push({ customerId, addedAt: new Date().toISOString() });
+        saveQueue(localQ);
+    }
+    renderQueue();
     showToast(currentLang === 'en' ? 'Added to queue' : 'कतार में जोड़ दिया गया', 'success');
 };
 
@@ -182,6 +215,9 @@ window.removeFromQueue = async function (customerId) {
     const q = query(queueRef, where('ownerId', '==', ownerUid), where('customerId', '==', customerId));
     const snapshot = await getDocs(q);
     snapshot.forEach(async (d) => { await safeDeleteDoc(doc(db, 'queues', d.id)); });
+    const localQ = getQueue().filter(e => e.customerId !== customerId);
+    saveQueue(localQ);
+    renderQueue();
     showToast(currentLang === 'en' ? 'Removed from queue' : 'कतार से हटा दिया गया', 'success');
 };
 
@@ -189,10 +225,17 @@ window.startWaterSession = async function () {
     const customerId = document.getElementById('start-water-customer').value;
     if (!customerId) { showToast(currentLang === 'en' ? 'Select a customer' : 'ग्राहक चुनें', 'error'); return; }
 
+    const rateInput = document.getElementById('start-water-rate');
+    const sessionRate = rateInput ? (parseFloat(rateInput.value) || 0) : 0;
+    if (!sessionRate || sessionRate <= 0) {
+        showToast(currentLang === 'en' ? 'Enter a valid rate' : 'सही रेट दर्ज करें', 'error');
+        return;
+    }
+
     const ownerUid = localStorage.getItem('user_uid');
     const twRef = doc(db, 'tubewells', ownerUid + '_primary');
     const twDoc = await getDoc(twRef);
-    const tw = twDoc.data();
+    const tw = twDoc.data() || {};
 
     if (tw.status === 'work_in_progress') {
         showToast(currentLang === 'en' ? 'Tubewell under maintenance' : 'ट्यूबवेल मरम्मत में है', 'error');
@@ -210,7 +253,8 @@ window.startWaterSession = async function () {
         status: 'running',
         currentCustomer: customerId,
         currentCustomerUid: getCustomerById(customerId)?.customerUid || customerId,
-        currentStartTime: startTime
+        currentStartTime: startTime,
+        currentSessionRate: sessionRate
     });
 
     // Update local
@@ -218,11 +262,14 @@ window.startWaterSession = async function () {
     localTw.status = 'running';
     localTw.currentCustomer = customerId;
     localTw.currentStartTime = startTime;
+    localTw.currentSessionRate = sessionRate;
     saveTubewellData(localTw);
 
     renderStatusCard();
+    renderQueue();
+    renderNextInQueue();
     closeModal('start-water-modal');
-    showToast(currentLang === 'en' ? 'Water started' : 'पानी शुरू हो गया', 'success');
+    showToast(currentLang === 'en' ? 'Water started @ ₹' + sessionRate + '/hr' : 'पानी शुरू @ ₹' + sessionRate + '/घंटा', 'success');
 };
 
 window.stopWaterSession = async function () {
@@ -240,14 +287,23 @@ window.stopWaterSession = async function () {
     let end = new Date(today + 'T' + endTime);
     if (end < start) end.setDate(end.getDate() + 1);
     const duration = (end - start) / (1000 * 60 * 60);
-    const rate = tw.rate || 150;
+    const rate = tw.currentSessionRate || tw.rate || 150;
     const amount = Math.round(duration * rate);
 
-    // Save usage to Firestore
+    // Resolve customer identity for cross-device sync
+    const cust = getCustomerById(tw.currentCustomer) || {};
+    const customerUid = tw.currentCustomerUid || cust.customerUid || ('phone_' + (cust.phone || ''));
+    const customerPhone = cust.phone || '';
+    const customerName = cust.name || '';
+
+    // Save usage to Firestore — full fields so customer app can query it
     const usageRef = doc(collection(db, 'water_usage'));
-    await safeSetDoc(usageRef, {
+    const usagePayload = {
         business_id: ownerUid,
         customer_id: tw.currentCustomer,
+        customer_uid: customerUid,
+        customer_phone: customerPhone,
+        customer_name: customerName,
         start_time: startTime,
         end_time: endTime,
         duration: parseFloat(duration.toFixed(2)),
@@ -257,13 +313,16 @@ window.stopWaterSession = async function () {
         type: 'water',
         date: today,
         created_at: safeServerTimestamp()
-    });
+    };
+    await safeSetDoc(usageRef, usagePayload);
 
     // Reset tubewell in Firestore
     await safeUpdateDoc(twRef, {
         status: 'stopped',
         currentCustomer: null,
-        currentStartTime: null
+        currentCustomerUid: null,
+        currentStartTime: null,
+        currentSessionRate: null
     });
 
     // Update local
@@ -271,17 +330,47 @@ window.stopWaterSession = async function () {
     localTw.status = 'stopped';
     localTw.currentCustomer = null;
     localTw.currentStartTime = null;
+    localTw.currentSessionRate = null;
     saveTubewellData(localTw);
 
-    // Save to local history
+    // Save to local history (owner)
     const history = getWaterHistory();
-    history.push({ customerId: tw.currentCustomer, date: today, start: startTime, end: endTime, duration: parseFloat(duration.toFixed(2)), rate, amount, status: 'pending', type: 'water' });
+    history.push({
+        id: usageRef.id,
+        customerId: tw.currentCustomer,
+        customerUid,
+        customerPhone,
+        date: today,
+        start: startTime,
+        end: endTime,
+        duration: parseFloat(duration.toFixed(2)),
+        rate,
+        amount,
+        status: 'pending',
+        type: 'water'
+    });
     saveWaterHistory(history);
 
+    // Also mirror into customer_history for Bahi / detail views
+    const custHistory = JSON.parse(localStorage.getItem('customer_history') || '{}');
+    if (!custHistory[tw.currentCustomer]) custHistory[tw.currentCustomer] = [];
+    custHistory[tw.currentCustomer].push({
+        type: 'water', date: today, start: startTime, end: endTime,
+        duration: parseFloat(duration.toFixed(2)), rate, amount, status: 'pending'
+    });
+    localStorage.setItem('customer_history', JSON.stringify(custHistory));
+    if (!customerData[tw.currentCustomer]) customerData[tw.currentCustomer] = { name: customerName, phone: customerPhone, history: [] };
+    customerData[tw.currentCustomer].history.push({
+        type: 'water', date: today, start: startTime, end: endTime,
+        duration: parseFloat(duration.toFixed(2)), rate, amount, status: 'pending'
+    });
+
     renderStatusCard();
+    renderQueue();
+    if (typeof renderNextInQueue === 'function') renderNextInQueue();
     updateDashboardStats();
     renderPendingPayments();
-    showToast((currentLang === 'en' ? 'Stopped. Duration: ' : 'बंद. समय: ') + duration.toFixed(2) + (currentLang === 'en' ? ' hrs' : ' घंटे'), 'success');
+    showToast((currentLang === 'en' ? 'Stopped. Duration: ' : 'बंद. समय: ') + duration.toFixed(2) + (currentLang === 'en' ? ' hrs · ₹' : ' घंटे · ₹') + amount, 'success');
 };
 
 window.setMaintenanceMode = async function (active) {
@@ -320,6 +409,22 @@ window.addNewCustomer = async function () {
     }
     const ownerUid = localStorage.getItem('user_uid');
     const ownerPhone = localStorage.getItem('user_phone');
+
+    // Prevent duplicate customer by phone for this owner
+    const existingLocal = getCustomers().find(c => c.phone === phone);
+    if (existingLocal) {
+        showToast(currentLang === 'en' ? 'Customer already in your list' : 'ग्राहक पहले से आपकी सूची में है', 'info');
+        return;
+    }
+    try {
+        const custRef = collection(db, 'customers');
+        const dupQ = query(custRef, where('ownerId', '==', ownerUid), where('phone', '==', phone));
+        const dupSnap = await getDocs(dupQ);
+        if (!dupSnap.empty) {
+            showToast(currentLang === 'en' ? 'Customer already in your list' : 'ग्राहक पहले से आपकी सूची में है', 'info');
+            return;
+        }
+    } catch (e) { }
 
     // Check if customer user exists
     const usersRef = collection(db, 'users');
@@ -471,12 +576,61 @@ window.openBahiLedger = function (id) {
     showView('view-bahi-ledger');
 };
 
+let dashboardPeriod = 'today';
+
+window.setDashboardPeriod = function (period) {
+    dashboardPeriod = period;
+    document.querySelectorAll('.period-btn').forEach(b => {
+        const isActive = b.dataset.period === period;
+        b.classList.toggle('active', isActive);
+        if (isActive) {
+            b.style.background = 'var(--ios-blue)';
+            b.style.color = '#fff';
+            b.style.border = 'none';
+        } else {
+            b.style.background = 'var(--card)';
+            b.style.color = 'var(--text)';
+            b.style.border = '1px solid var(--separator)';
+        }
+    });
+    const custom = document.getElementById('custom-date-range');
+    if (custom) custom.style.display = period === 'custom' ? 'grid' : 'none';
+    if (period === 'custom') {
+        const from = document.getElementById('dash-from-date');
+        const to = document.getElementById('dash-to-date');
+        if (from && !from.value) from.value = new Date().toISOString().split('T')[0];
+        if (to && !to.value) to.value = new Date().toISOString().split('T')[0];
+        if (from) from.onchange = updateDashboardStats;
+        if (to) to.onchange = updateDashboardStats;
+    }
+    updateDashboardStats();
+};
+
 window.updateDashboardStats = function () {
     const history = getWaterHistory();
-    const today = new Date().toISOString().split('T')[0];
+    const now = new Date();
+    const today = now.toISOString().split('T')[0];
     let hours = 0, revenue = 0, received = 0, pending = 0;
+
+    const inRange = (dateStr) => {
+        if (!dateStr) return false;
+        if (dashboardPeriod === 'today') return dateStr === today;
+        if (dashboardPeriod === 'month') {
+            return dateStr.startsWith(today.slice(0, 7));
+        }
+        if (dashboardPeriod === 'year') {
+            return dateStr.startsWith(String(now.getFullYear()));
+        }
+        if (dashboardPeriod === 'custom') {
+            const from = (document.getElementById('dash-from-date') || {}).value || today;
+            const to = (document.getElementById('dash-to-date') || {}).value || today;
+            return dateStr >= from && dateStr <= to;
+        }
+        return dateStr === today;
+    };
+
     history.forEach(e => {
-        if (e.date === today && e.type === 'water') {
+        if (e.type === 'water' && inRange(e.date)) {
             hours += e.duration || 0;
             revenue += e.amount || 0;
             if (e.status === 'paid') received += e.amount;
@@ -486,12 +640,32 @@ window.updateDashboardStats = function () {
     const hrsEl = document.getElementById('stat-hours');
     if (hrsEl) hrsEl.innerHTML = hours.toFixed(1) + ' <small data-i18n="hrs">' + locales[currentLang].hrs + '</small>';
     const revEl = document.getElementById('stat-revenue');
-    if (revEl) revEl.innerText = '₹' + revenue;
+    if (revEl) revEl.innerText = '₹' + Math.round(revenue);
     const recEl = document.getElementById('stat-received');
-    if (recEl) recEl.innerText = '₹' + received;
+    if (recEl) recEl.innerText = '₹' + Math.round(received);
     const penEl = document.getElementById('stat-pending');
-    if (penEl) penEl.innerText = '₹' + pending;
+    if (penEl) penEl.innerText = '₹' + Math.round(pending);
+};
+
+window.saveDailyNote = function () {
+    const input = document.getElementById('daily-note-input');
+    if (!input) return;
+    const note = input.value.trim();
+    const today = new Date().toISOString().split('T')[0];
+    const notes = JSON.parse(localStorage.getItem('daily_notes') || '{}');
+    notes[today] = note;
+    localStorage.setItem('daily_notes', JSON.stringify(notes));
+    showToast(currentLang === 'en' ? 'Note saved' : 'नोट सेव हो गया', 'success');
+};
+
+function loadDailyNote() {
+    const input = document.getElementById('daily-note-input');
+    if (!input) return;
+    const today = new Date().toISOString().split('T')[0];
+    const notes = JSON.parse(localStorage.getItem('daily_notes') || '{}');
+    input.value = notes[today] || '';
 }
+
 
 window.renderPendingPayments = function () {
     const history = getWaterHistory();
@@ -548,35 +722,32 @@ window.renderCustomerLinkedTubewell = async function () {
         return renderCustomerLinkedTubewell();
     }
 
-    if (link) {
-        const ownerInfo = JSON.parse(localStorage.getItem('owner_info') || '{}');
-        const twData = JSON.parse(localStorage.getItem('tubewell_data') || '{}');
-        infoDiv.innerHTML = '<div class="list-item" style="padding:0;"><div class="item-info"><h4>' + (twData.name || 'Tubewell') + '</h4><p>' + (ownerInfo.name || 'Owner') + ' • ' + (twData.location || '') + '</p><p style="margin-top:4px;">Rate: ₹' + (twData.rate || 150) + '/hr</p></div></div><button class="btn-ghost mt-2" onclick="unlinkTubewell()" style="width:100%; color:var(--ios-red);">' + locales[currentLang].unlink + '</button>';
-        if (formDiv) formDiv.style.display = 'none';
-        if (statusDiv) statusDiv.style.display = 'none';
-        const linkedName = document.getElementById('linked-tubewell-name');
-        if (linkedName) linkedName.innerText = twData.name || 'Tubewell';
-        return;
-    }
-
-    if (pending && pending.status === 'pending') {
-        infoDiv.innerHTML = '<p style="color: var(--ios-gray); font-size: 14px;">' + (currentLang === 'en' ? 'Request sent to' : 'अनुरोध भेजा गया') + ' ' + pending.ownerPhone + '</p>';
-        if (formDiv) formDiv.style.display = 'none';
-        if (statusDiv) statusDiv.style.display = 'block';
-        return;
-    }
-
-    if (pending && pending.status === 'rejected') {
-        infoDiv.innerHTML = '<p style="color: var(--ios-red); font-size: 14px;">' + (currentLang === 'en' ? 'Request was rejected' : 'अनुरोध अस्वीकार कर दिया गया') + '</p>';
-        if (formDiv) formDiv.style.display = 'block';
-        if (statusDiv) statusDiv.style.display = 'none';
-        localStorage.removeItem('pending_request_owner');
-        return;
-    }
-
-    infoDiv.innerHTML = '<p style="color: var(--ios-gray); font-size: 14px;">' + (currentLang === 'en' ? 'No tubewell linked' : 'कोई ट्यूबवेल लिंक नहीं') + '</p>';
+    // Always keep the link form visible so customer can link more owners
     if (formDiv) formDiv.style.display = 'block';
     if (statusDiv) statusDiv.style.display = 'none';
+
+    // Show linked / pending status summary (can have multiple)
+    let summaryHtml = '';
+    if (firestoreLinks.length > 0) {
+        summaryHtml = firestoreLinks.map(fl => {
+            return '<div class="list-item" style="padding:8px 0; border-bottom:0.5px solid var(--separator);"><div class="item-info"><h4 style="font-size:14px;">' + (fl.ownerPhone || 'Owner') + '</h4><p style="font-size:12px; color:var(--ios-green);">' + (currentLang === 'en' ? 'Linked' : 'जुड़ा हुआ') + '</p></div></div>';
+        }).join('');
+    } else if (link) {
+        const twData = JSON.parse(localStorage.getItem('tubewell_data') || '{}');
+        summaryHtml = '<div class="list-item" style="padding:8px 0;"><div class="item-info"><h4 style="font-size:14px;">' + (twData.name || link.ownerPhone || 'Tubewell') + '</h4><p style="font-size:12px; color:var(--ios-green);">' + (currentLang === 'en' ? 'Linked' : 'जुड़ा हुआ') + '</p></div></div>';
+    }
+    if (pending && pending.status === 'pending') {
+        summaryHtml += '<p style="color: var(--ios-orange); font-size: 13px; margin-top:6px;">' + (currentLang === 'en' ? 'Pending request to ' : 'लंबित अनुरोध: ') + pending.ownerPhone + '</p>';
+        if (statusDiv) statusDiv.style.display = 'block';
+    }
+    if (pending && pending.status === 'rejected') {
+        summaryHtml += '<p style="color: var(--ios-red); font-size: 13px; margin-top:6px;">' + (currentLang === 'en' ? 'Last request was rejected' : 'पिछला अनुरोध अस्वीकार') + '</p>';
+        localStorage.removeItem('pending_request_owner');
+    }
+    if (!summaryHtml) {
+        summaryHtml = '<p style="color: var(--ios-gray); font-size: 14px;">' + (currentLang === 'en' ? 'No tubewell linked yet. Enter owner phone below.' : 'अभी कोई ट्यूबवेल लिंक नहीं। नीचे मालिक का नंबर डालें।') + '</p>';
+    }
+    infoDiv.innerHTML = summaryHtml;
 };
 window.renderMyTubewell = async function () {
     const container = document.getElementById('my-tubewell-info');
@@ -693,14 +864,25 @@ window.renderMyTubewell = async function () {
 
 window.unlinkTubewellByOwner = async function (ownerUid) {
     const customerUid = localStorage.getItem('user_uid');
+    const customerPhone = localStorage.getItem('user_phone');
     if (!customerUid || !ownerUid) return;
 
     if (!isMockMode) {
         try {
-            // Delete specific customer_link
             await safeDeleteDoc(doc(db, 'customer_links', customerUid + '_' + ownerUid));
 
-            // Update link_requests to rejected
+            // Also try query-based delete
+            const linksRef = collection(db, 'customer_links');
+            const lq = query(linksRef, where('customerUid', '==', customerUid), where('ownerUid', '==', ownerUid));
+            const lsnap = await getDocs(lq);
+            lsnap.forEach(async (d) => { await safeDeleteDoc(doc(db, 'customer_links', d.id)); });
+
+            // Remove from owner's customers list (keep water_usage for Bahi)
+            const custRef = collection(db, 'customers');
+            const cq = query(custRef, where('ownerId', '==', ownerUid), where('phone', '==', customerPhone));
+            const csnap = await getDocs(cq);
+            csnap.forEach(async (d) => { await safeDeleteDoc(doc(db, 'customers', d.id)); });
+
             const reqRef = collection(db, 'link_requests');
             const rq = query(reqRef, where('ownerUid', '==', ownerUid), where('customerUid', '==', customerUid));
             const rsnap = await getDocs(rq);
@@ -712,11 +894,9 @@ window.unlinkTubewellByOwner = async function (ownerUid) {
         }
     }
 
-    // If this was the only/primary link, clear localStorage
-    const linksRef = collection(db, 'customer_links');
-    const q = query(linksRef, where('customerUid', '==', customerUid));
-    const snapshot = await getDocs(q);
-
+    const linksRef2 = collection(db, 'customer_links');
+    const q2 = query(linksRef2, where('customerUid', '==', customerUid));
+    const snapshot = await getDocs(q2);
     if (snapshot.empty) {
         localStorage.removeItem('customer_link');
     }
@@ -745,13 +925,22 @@ window.sendLinkRequest = async function () {
     const customerPhone = localStorage.getItem('user_phone');
     const userInfo = JSON.parse(localStorage.getItem('user_info') || '{}');
 
+    // Check if already linked via customer_links
+    const linksRefCheck = collection(db, 'customer_links');
+    const linkQ = query(linksRefCheck, where('customerUid', '==', customerUid), where('ownerUid', '==', ownerUid));
+    const linkSnap = await getDocs(linkQ);
+    if (!linkSnap.empty) {
+        showToast(currentLang === 'en' ? 'Already linked' : 'पहले से जुड़ा हुआ है', 'info');
+        return;
+    }
+
     // Check if already requested
     const reqRef = collection(db, 'link_requests');
     const existing = query(reqRef, where('ownerUid', '==', ownerUid), where('customerUid', '==', customerUid));
     const exSnap = await getDocs(existing);
     if (!exSnap.empty) {
         const status = exSnap.docs[0].data().status;
-        if (status === 'pending') { showToast(currentLang === 'en' ? 'Request already pending' : 'अनुरोध पहले से लंबित है', 'info'); return; }
+        if (status === 'pending') { showToast(currentLang === 'en' ? 'Already requested' : 'अनुरोध पहले से भेजा गया है', 'info'); return; }
         if (status === 'accepted') { showToast(currentLang === 'en' ? 'Already linked' : 'पहले से जुड़ा हुआ है', 'info'); return; }
     }
 
@@ -778,22 +967,34 @@ window.sendLinkRequest = async function () {
     });
 
     localStorage.setItem('pending_request_owner', JSON.stringify({ ownerUid, ownerPhone: phone, status: 'pending' }));
+    const phoneEl = document.getElementById('link-owner-phone');
+    if (phoneEl) phoneEl.value = '';
     renderCustomerLinkedTubewell();
-    showToast(currentLang === 'en' ? 'Request sent!' : 'अनुरोध भेज दिया गया!', 'success');
+    renderMyTubewell();
+    showToast(currentLang === 'en' ? 'Request sent! Check My Tubewell section.' : 'अनुरोध भेज दिया गया! मेरा ट्यूबवेल सेक्शन देखें।', 'success');
 };
 
 
 window.unlinkTubewell = async function () {
     const customerUid = localStorage.getItem('user_uid');
+    const customerPhone = localStorage.getItem('user_phone');
     const link = JSON.parse(localStorage.getItem('customer_link') || 'null');
     if (link && link.ownerUid) {
-        // Only remove customer_links doc (customer owns this)
+        // Remove customer_links
         const linksRef = collection(db, 'customer_links');
         const q = query(linksRef, where('customerUid', '==', customerUid), where('ownerUid', '==', link.ownerUid));
         const snap = await getDocs(q);
         snap.forEach(async (d) => { await safeDeleteDoc(doc(db, 'customer_links', d.id)); });
 
-        // Also update the link_requests doc status to rejected so owner knows
+        // Remove from owner's customers list (transactions in water_usage stay for Bahi)
+        try {
+            const custRef = collection(db, 'customers');
+            const cq = query(custRef, where('ownerId', '==', link.ownerUid), where('phone', '==', customerPhone));
+            const csnap = await getDocs(cq);
+            csnap.forEach(async (d) => { await safeDeleteDoc(doc(db, 'customers', d.id)); });
+        } catch (e) { console.error('Remove from owner customers failed', e); }
+
+        // Update link_requests to rejected
         const reqRef = collection(db, 'link_requests');
         const rq = query(reqRef, where('ownerUid', '==', link.ownerUid), where('customerUid', '==', customerUid));
         const rsnap = await getDocs(rq);
@@ -802,25 +1003,59 @@ window.unlinkTubewell = async function () {
     localStorage.removeItem('customer_link');
     localStorage.removeItem('pending_request_owner');
     renderCustomerLinkedTubewell();
+    renderMyTubewell();
     showToast(currentLang === 'en' ? 'Unlinked' : 'हटा दिया गया', 'info');
 };
 
-window.renderCustomerQueuePosition = function () {
-    const queue = getQueue();
+window.renderCustomerQueuePosition = async function () {
     const posEl = document.getElementById('cust-queue-position');
     if (!posEl) return;
-    const link = JSON.parse(localStorage.getItem('customer_link') || 'null');
-    if (!link) { posEl.innerText = '-'; return; }
+    const customerUid = localStorage.getItem('user_uid');
     const userPhone = localStorage.getItem('user_phone');
-    const idx = queue.findIndex(q => {
-        const c = getCustomerById(q.customerId);
-        return c && c.phone === userPhone;
-    });
-    if (idx === -1) { posEl.innerText = '-'; return; }
-    if (idx === 0) { posEl.innerHTML = '<span style="color:var(--ios-green); font-size:13px;">' + locales[currentLang].youAreNext + '</span>'; return; }
-    posEl.innerText = '#' + (idx + 1);
-}
+    let position = -1;
 
+    // Try Firestore queues for linked owners
+    try {
+        const linksRef = collection(db, 'customer_links');
+        const lq = query(linksRef, where('customerUid', '==', customerUid));
+        const lsnap = await getDocs(lq);
+        for (const ld of lsnap.docs) {
+            const ownerUid = ld.data().ownerUid;
+            // Find my customer id under this owner
+            const custRef = collection(db, 'customers');
+            const cq = query(custRef, where('ownerId', '==', ownerUid), where('phone', '==', userPhone));
+            const csnap = await getDocs(cq);
+            if (csnap.empty) continue;
+            const myCustId = csnap.docs[0].id;
+            const queueRef = collection(db, 'queues');
+            const qq = query(queueRef, where('ownerId', '==', ownerUid));
+            const qsnap = await getDocs(qq);
+            const entries = qsnap.docs.map(d => d.data()).sort((a, b) => {
+                const ta = a.addedAt?.toMillis ? a.addedAt.toMillis() : 0;
+                const tb = b.addedAt?.toMillis ? b.addedAt.toMillis() : 0;
+                return ta - tb;
+            });
+            const idx = entries.findIndex(e => e.customerId === myCustId);
+            if (idx >= 0) { position = idx; break; }
+        }
+    } catch (e) { console.error(e); }
+
+    // Fallback local queue
+    if (position < 0) {
+        const queue = getQueue();
+        position = queue.findIndex(q => {
+            const c = getCustomerById(q.customerId);
+            return c && c.phone === userPhone;
+        });
+    }
+
+    if (position < 0) { posEl.innerText = '-'; return; }
+    if (position === 0) {
+        posEl.innerHTML = '<span style="color:var(--ios-green); font-size:13px;">' + locales[currentLang].youAreNext + '</span>';
+        return;
+    }
+    posEl.innerText = '#' + (position + 1);
+}
 
 /* --- OWNER: LINK REQUESTS --- */
 window.renderLinkRequests = async function () {
@@ -899,6 +1134,8 @@ window.acceptLinkRequest = async function (requestId, customerUid, customerPhone
 };
 
 window.rejectLinkRequest = async function (requestId, customerUid) {
+    const ownerUid = localStorage.getItem('user_uid');
+    const ownerPhone = localStorage.getItem('user_phone');
     await safeUpdateDoc(doc(db, 'link_requests', requestId), { status: 'rejected' });
 
     // Notify customer
@@ -966,6 +1203,159 @@ window.startOwnerListeners = function () {
     onSnapshot(rq, () => {
         renderLinkRequests();
     });
+
+    // Live sync water_usage → dashboard / pending / Bahi
+    const uq = query(collection(db, 'water_usage'), where('business_id', '==', ownerUid));
+    onSnapshot(uq, () => {
+        syncOwnerUsageFromServer();
+    });
+    // Initial
+    syncOwnerUsageFromServer();
+};
+
+
+/* --- CUSTOMER USAGE SYNC FROM FIRESTORE --- */
+window.loadCustomerUsageFromServer = async function () {
+    const customerUid = localStorage.getItem('user_uid');
+    const customerPhone = localStorage.getItem('user_phone');
+    if (!customerUid && !customerPhone) return [];
+
+    const records = [];
+    const seen = new Set();
+
+    try {
+        // Query by customer_uid
+        if (customerUid) {
+            const q1 = query(collection(db, 'water_usage'), where('customer_uid', '==', customerUid));
+            const s1 = await getDocs(q1);
+            s1.forEach(d => {
+                if (!seen.has(d.id)) {
+                    seen.add(d.id);
+                    records.push({ id: d.id, ...d.data() });
+                }
+            });
+        }
+        // Also by phone (covers owner-added customers before account existed)
+        if (customerPhone) {
+            const q2 = query(collection(db, 'water_usage'), where('customer_phone', '==', customerPhone));
+            const s2 = await getDocs(q2);
+            s2.forEach(d => {
+                if (!seen.has(d.id)) {
+                    seen.add(d.id);
+                    records.push({ id: d.id, ...d.data() });
+                }
+            });
+        }
+    } catch (e) {
+        console.error('loadCustomerUsage failed', e);
+    }
+
+    // Sort by date desc
+    records.sort((a, b) => (b.date || '').localeCompare(a.date || '') || (b.start_time || '').localeCompare(a.start_time || ''));
+    return records;
+};
+
+window.renderCustomerUsageDashboard = async function () {
+    const records = await loadCustomerUsageFromServer();
+    const water = records.filter(r => r.type === 'water' || (!r.type && r.duration != null));
+    const payments = records.filter(r => r.type === 'payment');
+
+    let totalHrs = 0, totalDue = 0, totalPaid = 0;
+    water.forEach(r => {
+        totalHrs += parseFloat(r.duration) || 0;
+        if (r.status === 'pending') totalDue += parseFloat(r.amount) || 0;
+        else if (r.status === 'paid') totalPaid += parseFloat(r.amount) || 0;
+    });
+    payments.forEach(r => { totalPaid += parseFloat(r.amount) || 0; });
+    // Net due = water pending - (payments beyond paid water). Simple: due = max(0, sum water - sum payments)
+    const allWaterAmt = water.reduce((s, r) => s + (parseFloat(r.amount) || 0), 0);
+    const netDue = Math.max(0, allWaterAmt - totalPaid);
+
+    const hrsEl = document.getElementById('cust-total-hrs');
+    const dueEl = document.getElementById('cust-total-due-display');
+    const paidEl = document.getElementById('cust-total-paid-display');
+    if (hrsEl) hrsEl.innerHTML = totalHrs.toFixed(1) + ' <small>Hrs</small>';
+    if (dueEl) dueEl.innerText = '₹' + Math.round(netDue);
+    if (paidEl) paidEl.innerText = '₹' + Math.round(totalPaid);
+
+    const list = document.getElementById('customer-usage-list');
+    if (list) {
+        if (water.length === 0) {
+            list.innerHTML = '<div class="list-item empty-state"><div class="item-info"><p>' + (currentLang === 'en' ? 'No usage yet' : 'अभी कोई उपयोग नहीं') + '</p></div></div>';
+        } else {
+            list.innerHTML = water.map(r => {
+                const st = r.status === 'paid'
+                    ? '<span style="font-size:11px;color:var(--ios-green);">PAID</span>'
+                    : '<span style="font-size:11px;color:var(--ios-red);">PENDING</span>';
+                return '<div class="list-item"><div class="item-info"><h4>' + (currentLang === 'en' ? 'Water' : 'पानी') + '</h4><p>' + (r.date || '') + ' · ' + (r.start_time || '') + ' - ' + (r.end_time || '') + ' · ' + (r.duration || 0) + ' hrs</p></div><div style="text-align:right;"><div class="item-value ' + (r.status === 'pending' ? 'text-red' : 'text-green') + '">₹' + (r.amount || 0) + '</div>' + st + '</div></div>';
+            }).join('');
+        }
+    }
+
+    const payList = document.getElementById('customer-payments-list');
+    if (payList) {
+        if (payments.length === 0) {
+            payList.innerHTML = '<div class="list-item empty-state"><div class="item-info"><p>' + (currentLang === 'en' ? 'No payments yet' : 'अभी कोई भुगतान नहीं') + '</p></div></div>';
+        } else {
+            payList.innerHTML = payments.map(r => {
+                return '<div class="list-item"><div class="item-info"><h4>' + (r.note || (currentLang === 'en' ? 'Payment' : 'भुगतान')) + '</h4><p>' + (r.date || '') + '</p></div><div class="item-value text-green">₹' + (r.amount || 0) + '</div></div>';
+            }).join('');
+        }
+    }
+};
+
+/* --- OWNER: SYNC water_usage FROM SERVER INTO LOCAL --- */
+window.syncOwnerUsageFromServer = async function () {
+    const ownerUid = localStorage.getItem('user_uid');
+    if (!ownerUid) return;
+    try {
+        const q = query(collection(db, 'water_usage'), where('business_id', '==', ownerUid));
+        const snap = await getDocs(q);
+        const history = [];
+        const custHistory = {};
+        snap.forEach(d => {
+            const r = d.data();
+            const cid = r.customer_id;
+            if (r.type === 'water' || (!r.type && r.duration != null)) {
+                history.push({
+                    id: d.id,
+                    customerId: cid,
+                    customerUid: r.customer_uid,
+                    customerPhone: r.customer_phone,
+                    date: r.date,
+                    start: r.start_time,
+                    end: r.end_time,
+                    duration: r.duration,
+                    rate: r.rate,
+                    amount: r.amount,
+                    status: r.status || 'pending',
+                    type: 'water'
+                });
+                if (!custHistory[cid]) custHistory[cid] = [];
+                custHistory[cid].push({
+                    type: 'water', date: r.date, start: r.start_time, end: r.end_time,
+                    duration: r.duration, rate: r.rate, amount: r.amount, status: r.status || 'pending'
+                });
+            } else if (r.type === 'payment') {
+                if (!custHistory[cid]) custHistory[cid] = [];
+                custHistory[cid].push({ type: 'payment', date: r.date, amount: r.amount, note: r.note || 'Cash' });
+            }
+        });
+        saveWaterHistory(history);
+        localStorage.setItem('customer_history', JSON.stringify(custHistory));
+        // Rebuild customerData histories
+        Object.keys(custHistory).forEach(cid => {
+            if (!customerData[cid]) {
+                const c = getCustomerById(cid);
+                customerData[cid] = { name: c ? c.name : '', phone: c ? c.phone : '', history: [] };
+            }
+            customerData[cid].history = custHistory[cid];
+        });
+        updateDashboardStats();
+        renderPendingPayments();
+    } catch (e) {
+        console.error('syncOwnerUsage failed', e);
+    }
 };
 
 window.startCustomerListeners = function () {
@@ -997,6 +1387,21 @@ window.startCustomerListeners = function () {
             renderCustomerQueuePosition();
         });
     }
+
+    // Live sync of water usage / payments for this customer
+    const phone = localStorage.getItem('user_phone');
+    try {
+        if (customerUid) {
+            const uq = query(collection(db, 'water_usage'), where('customer_uid', '==', customerUid));
+            onSnapshot(uq, () => { renderCustomerUsageDashboard(); });
+        }
+        if (phone) {
+            const pq = query(collection(db, 'water_usage'), where('customer_phone', '==', phone));
+            onSnapshot(pq, () => { renderCustomerUsageDashboard(); });
+        }
+    } catch (e) { console.error(e); }
+    // Initial load
+    renderCustomerUsageDashboard();
 
     // Always listen for notifications (accept/reject) regardless of link status
     const notifRef = collection(db, 'notifications');
@@ -1059,6 +1464,42 @@ window.showToast = function (message, type = 'info') {
         setTimeout(() => toast.remove(), 300);
     }, 3000);
 }
+
+
+window.showConfirmPopup = function (title, message, okText, cancelText, onOk, onCancel) {
+    let overlay = document.getElementById('confirm-popup-overlay');
+    if (!overlay) {
+        overlay = document.createElement('div');
+        overlay.id = 'confirm-popup-overlay';
+        overlay.className = 'modal-overlay active';
+        overlay.innerHTML = `
+            <div class="modal-content" style="max-width: 360px; margin: auto; border-radius: 16px; transform: none;">
+                <div class="modal-header"><h3 id="confirm-popup-title"></h3></div>
+                <div class="modal-body">
+                    <p id="confirm-popup-msg" style="font-size:15px; color:var(--text-secondary); margin-bottom:20px; line-height:1.45;"></p>
+                    <div style="display:flex; gap:10px;">
+                        <button class="btn-ghost" id="confirm-popup-cancel" style="flex:1;"></button>
+                        <button class="btn-primary" id="confirm-popup-ok" style="flex:1;"></button>
+                    </div>
+                </div>
+            </div>`;
+        document.body.appendChild(overlay);
+    }
+    document.getElementById('confirm-popup-title').innerText = title;
+    document.getElementById('confirm-popup-msg').innerText = message;
+    document.getElementById('confirm-popup-ok').innerText = okText || 'OK';
+    document.getElementById('confirm-popup-cancel').innerText = cancelText || 'Cancel';
+    overlay.classList.add('active');
+    overlay.style.display = 'flex';
+    overlay.style.alignItems = 'center';
+    overlay.style.justifyContent = 'center';
+
+    const okBtn = document.getElementById('confirm-popup-ok');
+    const cancelBtn = document.getElementById('confirm-popup-cancel');
+    const close = () => { overlay.classList.remove('active'); overlay.style.display = 'none'; };
+    okBtn.onclick = () => { close(); if (onOk) onOk(); };
+    cancelBtn.onclick = () => { close(); if (onCancel) onCancel(); };
+};
 
 /* --- THEME TOGGLE --- */
 const themeToggle = document.getElementById('theme-toggle');
@@ -1145,6 +1586,30 @@ const locales = {
         totalDue: "Total Due",
         totalPaid: "Total Paid",
         deleteAccount: "Delete Account",
+        howAppWorks: "How this app works",
+        howAppWorksSub: "Guide for owners & customers",
+        dateOfBirth: "Date of Birth",
+        iAmA: "I am a",
+        tubewellOwner: "Tubewell Owner",
+        customerRole: "Customer",
+        loginBtn: "Login",
+        registerBtn: "Register",
+        continueWithDetails: "Should we continue with these details?",
+        completeProfile: "Complete Your Profile",
+        tellAboutYourself: "Tell us a bit about yourself.",
+        yourName: "Your Name",
+        primaryTubewellName: "Primary Tubewell Name",
+        continueToApp: "Continue to App",
+        addEmail: "Add Email",
+        emailOptional: "Email (optional)",
+        periodToday: "Today",
+        periodMonth: "This Month",
+        periodYear: "This Year",
+        periodCustom: "Custom",
+        selectPeriod: "Period",
+        notesReminder: "Today's Note",
+        saveNote: "Save Note",
+        noNotes: "No notes for today",
     },
     hi: {
         appTitle: "अपना ट्यूबवेल",
@@ -1223,6 +1688,30 @@ const locales = {
         totalDue: "कुल बाकी",
         totalPaid: "कुल जमा",
         deleteAccount: "खाता हटाएं",
+        howAppWorks: "ऐप कैसे काम करता है",
+        howAppWorksSub: "मालिक और ग्राहक गाइड",
+        dateOfBirth: "जन्म तिथि",
+        iAmA: "मैं हूँ",
+        tubewellOwner: "ट्यूबवेल मालिक",
+        customerRole: "ग्राहक",
+        loginBtn: "लॉगिन",
+        registerBtn: "पंजीकरण",
+        continueWithDetails: "क्या हम इन विवरणों के साथ आगे बढ़ें?",
+        completeProfile: "अपना प्रोफाइल पूरा करें",
+        tellAboutYourself: "अपने बारे में थोड़ा बताएं।",
+        yourName: "आपका नाम",
+        primaryTubewellName: "प्राथमिक ट्यूबवेल का नाम",
+        continueToApp: "ऐप में जारी रखें",
+        addEmail: "ईमेल जोड़ें",
+        emailOptional: "ईमेल (वैकल्पिक)",
+        periodToday: "आज",
+        periodMonth: "इस महीने",
+        periodYear: "इस साल",
+        periodCustom: "कस्टम",
+        selectPeriod: "अवधि",
+        notesReminder: "आज का नोट",
+        saveNote: "नोट सेव करें",
+        noNotes: "आज कोई नोट नहीं",
     }
 };
 
@@ -1242,10 +1731,11 @@ function setLanguage(lang) {
     // Update greeting with actual user name
     const userInfo = JSON.parse(localStorage.getItem('user_info') || '{}');
     const ownerInfo = JSON.parse(localStorage.getItem('owner_info') || '{}');
-    const userName = userInfo.name || ownerInfo.name || (lang === 'en' ? 'Ram Bhai' : 'राम भाई');
+    const userName = userInfo.name || ownerInfo.name || '';
     const greetingEl = document.querySelector('.greeting');
     if (greetingEl) {
-        greetingEl.innerText = (lang === 'en' ? 'Namaste, ' : 'नमस्ते, ') + userName;
+        if (userName) greetingEl.innerText = (lang === 'en' ? 'Namaste, ' : 'नमस्ते, ') + userName;
+        else greetingEl.innerText = (lang === 'en' ? 'Namaste' : 'नमस्ते');
     }
 
     document.getElementById('login-en').classList.toggle('active', lang === 'en');
@@ -1282,41 +1772,72 @@ navItems.forEach(item => {
 
 /* --- LOGIN --- */
 let confirmationResult = null;
+/* --- LOGIN STATE --- */
+let isRegisterMode = false;
+
 document.getElementById('send-otp-btn').addEventListener('click', async () => {
-    const phoneInput = document.getElementById('login-phone').value;
+    const phoneInput = document.getElementById('login-phone').value.trim();
+    const dobInput = document.getElementById('login-dob').value;
     if (phoneInput.length !== 10) {
         showToast(currentLang === 'en' ? "Enter valid 10 digit number" : "सही 10 अंकों का नंबर दर्ज करें", "error");
         return;
     }
+    if (!dobInput) {
+        showToast(currentLang === 'en' ? "Please enter Date of Birth" : "कृपया जन्म तिथि दर्ज करें", "error");
+        return;
+    }
 
-    // Generate consistent UID from phone number
     const uid = 'phone_' + phoneInput;
     localStorage.setItem('user_uid', uid);
     localStorage.setItem('user_phone', phoneInput);
     localStorage.setItem('user_role', userRole);
-    localStorage.setItem('is_logged_in', 'true');
+    localStorage.setItem('user_dob', dobInput);
 
-    // Check if user already exists in Firestore
+    // REGISTER MODE: go to profile completion
+    if (isRegisterMode) {
+        document.getElementById('login-screen').style.display = 'none';
+        document.getElementById('login-screen').classList.remove('active');
+        document.getElementById('basic-info-screen').classList.add('active');
+        // Show owner extra fields if owner
+        const extra = document.getElementById('owner-extra-fields');
+        if (extra) extra.style.display = userRole === 'owner' ? 'block' : 'none';
+        return;
+    }
+
+    // LOGIN MODE: check if user exists
     try {
         const userDoc = await getDoc(doc(db, 'users', uid));
         if (userDoc.exists()) {
             const existingUser = userDoc.data();
 
-            // Restore user data
+            // Verify DOB if stored
+            if (existingUser.dob && existingUser.dob !== dobInput) {
+                showToast(currentLang === 'en' ? "Wrong Date of Birth. Please check details." : "गलत जन्म तिथि। कृपया विवरण जांचें।", "error");
+                return;
+            }
+
+            // Role mismatch warning but allow
+            if (existingUser.role && existingUser.role !== userRole) {
+                userRole = existingUser.role;
+                localStorage.setItem('user_role', userRole);
+            }
+
+            localStorage.setItem('is_logged_in', 'true');
             localStorage.setItem('user_info', JSON.stringify({
-                name: existingUser.name,
-                village: existingUser.village,
-                phone: phoneInput
+                name: existingUser.name || '',
+                village: existingUser.village || '',
+                phone: phoneInput,
+                email: existingUser.email || '',
+                dob: existingUser.dob || dobInput
             }));
 
-            if (userRole === 'owner') {
+            if (userRole === 'owner' || existingUser.role === 'owner') {
                 localStorage.setItem('owner_info', JSON.stringify({
-                    name: existingUser.name,
-                    village: existingUser.village,
-                    phone: phoneInput
+                    name: existingUser.name || '',
+                    village: existingUser.village || '',
+                    phone: phoneInput,
+                    email: existingUser.email || ''
                 }));
-
-                // Restore tubewell data
                 const twDoc = await getDoc(doc(db, 'tubewells', uid + '_primary'));
                 if (twDoc.exists()) {
                     localStorage.setItem('tubewell_data', JSON.stringify(twDoc.data()));
@@ -1324,6 +1845,7 @@ document.getElementById('send-otp-btn').addEventListener('click', async () => {
             }
 
             document.getElementById('login-screen').style.display = 'none';
+            document.getElementById('login-screen').classList.remove('active');
             document.getElementById('app-shell').style.display = 'block';
 
             if (userRole === 'customer') {
@@ -1339,73 +1861,29 @@ document.getElementById('send-otp-btn').addEventListener('click', async () => {
         console.error('User lookup failed:', e);
     }
 
-    // New user — show onboarding
-    document.getElementById('login-screen').style.display = 'none';
-    document.getElementById('basic-info-screen').classList.add('active');
+    // User does not exist — show custom popup
+    showConfirmPopup(
+        currentLang === 'en' ? 'Account not found' : 'खाता नहीं मिला',
+        currentLang === 'en'
+            ? 'This account does not exist. Do you want to register yourself?'
+            : 'यह खाता मौजूद नहीं है। क्या आप पंजीकरण करना चाहते हैं?',
+        currentLang === 'en' ? 'Create new' : 'नया बनाएं',
+        currentLang === 'en' ? 'Correct Details' : 'विवरण सही करें',
+        () => {
+            // Create new
+            isRegisterMode = true;
+            const btn = document.getElementById('send-otp-btn');
+            if (btn) btn.innerText = currentLang === 'en' ? 'Register' : 'पंजीकरण करें';
+            const msg = document.getElementById('register-confirm-msg');
+            if (msg) msg.style.display = 'block';
+            showToast(currentLang === 'en' ? 'Confirm details and tap Register' : 'विवरण की पुष्टि करें और पंजीकरण पर टैप करें', 'info');
+        },
+        () => {
+            // Correct details — just close, keep form
+            showToast(currentLang === 'en' ? 'Please correct your details' : 'कृपया अपना विवरण सही करें', 'info');
+        }
+    );
 });
-
-// document.getElementById('send-otp-btn').addEventListener('click', async () => {
-//     const phoneInput = document.getElementById('login-phone').value;
-//     if (phoneInput.length !== 10) {
-//         showToast(currentLang === 'en' ? "Enter valid 10 digit number" : "सही 10 अंकों का नंबर दर्ज करें", "error");
-//         return;
-//     }
-//     const phone = '+91' + phoneInput;
-
-//     try {
-//         const verifier = new RecaptchaVerifier(auth, 'recaptcha-container', { size: 'invisible' });
-//         confirmationResult = await signInWithPhoneNumber(auth, phone, verifier);
-//         document.getElementById('phone-auth-section').style.display = 'none';
-//         document.getElementById('otp-verify-section').style.display = 'block';
-//         showToast(currentLang === 'en' ? "OTP Sent!" : "OTP भेज दिया गया!", "success");
-//     } catch (e) {
-//         console.error(e);
-//         showToast(currentLang === 'en' ? "Failed to send OTP" : "OTP भेजने में विफल", "error");
-//     }
-// });
-
-// document.getElementById('verify-otp-btn').addEventListener('click', async () => {
-//     const otp = document.getElementById('otp-input').value;
-//     if (!otp || otp.length !== 6) {
-//         showToast(currentLang === 'en' ? "Enter 6-digit OTP" : "6 अंकों का OTP दर्ज करें", "error");
-//         return;
-//     }
-//     try {
-//         const result = await confirmationResult.confirm(otp);
-//         const user = result.user;
-//         const phone = user.phoneNumber.replace('+91', '');
-
-//         localStorage.setItem('is_logged_in', 'true');
-//         localStorage.setItem('user_phone', phone);
-//         localStorage.setItem('user_role', userRole);
-//         localStorage.setItem('user_uid', user.uid);
-
-//         // Check if user exists in Firestore
-//         const userDoc = await getDoc(doc(db, 'users', user.uid));
-//         if (userDoc.exists()) {
-//             const data = userDoc.data();
-//             localStorage.setItem('user_info', JSON.stringify({ name: data.name, village: data.village, phone }));
-//             if (data.role === 'owner') {
-//                 localStorage.setItem('owner_info', JSON.stringify({ name: data.name, village: data.village, phone }));
-//                 localStorage.setItem('tubewell_data', JSON.stringify(data.tubewell || {}));
-//             }
-//             showToast(currentLang === 'en' ? "Login Successful!" : "लॉगिन सफल!", "success");
-//             document.getElementById('login-screen').style.display = 'none';
-//             document.getElementById('login-screen').classList.remove('active');
-//             document.getElementById('app-shell').style.display = 'block';
-//             if (data.role === 'customer') setupCustomerUI();
-//             else setupOwnerUI();
-//         } else {
-//             // New user - show basic info screen
-//             document.getElementById('login-screen').style.display = 'none';
-//             document.getElementById('login-screen').classList.remove('active');
-//             document.getElementById('basic-info-screen').classList.add('active');
-//         }
-//     } catch (e) {
-//         console.error(e);
-//         showToast(currentLang === 'en' ? "Invalid OTP" : "गलत OTP", "error");
-//     }
-// });
 
 /* --- BASIC INFO ONBOARDING --- */
 document.getElementById('save-basic-info-btn').addEventListener('click', async () => {
@@ -1417,13 +1895,25 @@ document.getElementById('save-basic-info-btn').addEventListener('click', async (
     }
 
     const phone = localStorage.getItem('user_phone');
-    const uid = localStorage.getItem('user_uid'); // Already set in login
+    const uid = localStorage.getItem('user_uid');
+    const dob = localStorage.getItem('user_dob') || '';
 
-    const userData = { name, village, phone, role: userRole, createdAt: safeServerTimestamp() };
+    let twName = '';
+    let twRate = 150;
+    if (userRole === 'owner') {
+        twName = (document.getElementById('reg-tw-name') || {}).value?.trim() || '';
+        twRate = parseFloat((document.getElementById('reg-tw-rate') || {}).value) || 150;
+        if (!twName) {
+            showToast(currentLang === 'en' ? "Enter primary tubewell name" : "प्राथमिक ट्यूबवेल का नाम दर्ज करें", "error");
+            return;
+        }
+    }
 
-    // Save to Firestore (always — phone is the primary identifier)
+    const userData = { name, village, phone, role: userRole, dob, email: '', createdAt: safeServerTimestamp() };
+
     await safeSetDoc(doc(db, 'users', uid), userData);
-    localStorage.setItem('user_info', JSON.stringify({ name, village, phone }));
+    localStorage.setItem('is_logged_in', 'true');
+    localStorage.setItem('user_info', JSON.stringify({ name, village, phone, email: '', dob }));
 
     document.getElementById('basic-info-screen').classList.remove('active');
     document.getElementById('app-shell').style.display = 'block';
@@ -1431,16 +1921,27 @@ document.getElementById('save-basic-info-btn').addEventListener('click', async (
     document.querySelector('.greeting').innerText = (currentLang === 'en' ? 'Namaste, ' : 'नमस्ते, ') + name;
     document.getElementById('profile-name-display').innerText = name;
     document.getElementById('edit-profile-name').value = name;
+    document.getElementById('profile-business-display').innerText = village;
+    document.getElementById('edit-profile-business').value = village;
 
     if (userRole === 'customer') {
         setupCustomerUI();
     } else {
-        localStorage.setItem('owner_info', JSON.stringify({ name, village, phone }));
-        const defaultTw = { name: name + ' Tubewell', location: village, rate: 150, status: 'stopped', currentCustomer: null, currentStartTime: null, ownerId: uid };
+        localStorage.setItem('owner_info', JSON.stringify({ name, village, phone, email: '' }));
+        const defaultTw = {
+            name: twName,
+            location: village,
+            rate: twRate,
+            status: 'stopped',
+            currentCustomer: null,
+            currentStartTime: null,
+            ownerId: uid
+        };
         await safeSetDoc(doc(db, 'tubewells', uid + '_primary'), defaultTw);
         localStorage.setItem('tubewell_data', JSON.stringify(defaultTw));
         setupOwnerUI();
     }
+    isRegisterMode = false;
     showToast(currentLang === 'en' ? "Welcome!" : "स्वागत है!", "success");
 });
 
@@ -1451,11 +1952,20 @@ function loadOwnerData() {
         document.getElementById('profile-name-display').innerText = data.name;
         document.getElementById('edit-profile-name').value = data.name;
     }
-    const tw = JSON.parse(localStorage.getItem('tubewell_data') || '{}');
-    if (tw.name) {
-        const village = data.village || 'Village XYZ';
-        document.getElementById('profile-business-display').innerText = village;
-        document.getElementById('edit-profile-business').value = village;
+    if (data.village) {
+        document.getElementById('profile-business-display').innerText = data.village;
+        document.getElementById('edit-profile-business').value = data.village;
+    } else {
+        const bd = document.getElementById('profile-business-display');
+        if (bd) bd.innerText = '';
+        const be = document.getElementById('edit-profile-business');
+        if (be) be.value = '';
+    }
+    if (data.email) {
+        const emailEl = document.getElementById('profile-email-display');
+        if (emailEl) emailEl.innerText = data.email;
+        const emailInput = document.getElementById('edit-profile-email');
+        if (emailInput) emailInput.value = data.email;
     }
 }
 
@@ -1468,17 +1978,26 @@ window.toggleProfileEdit = function (show) {
 window.saveProfile = async function () {
     const name = document.getElementById('edit-profile-name').value.trim();
     const village = document.getElementById('edit-profile-business').value.trim();
+    const email = (document.getElementById('edit-profile-email') || {}).value?.trim() || '';
     if (!name || !village) {
         showToast(currentLang === 'en' ? "Please fill all fields" : "सभी फील्ड भरें", "error");
         return;
     }
     const uid = localStorage.getItem('user_uid');
-    await safeUpdateDoc(doc(db, 'users', uid), { name, village });
+    await safeUpdateDoc(doc(db, 'users', uid), { name, village, email });
+    const info = JSON.parse(localStorage.getItem('user_info') || '{}');
+    info.name = name; info.village = village; info.email = email;
+    localStorage.setItem('user_info', JSON.stringify(info));
+    if (localStorage.getItem('user_role') === 'owner') {
+        localStorage.setItem('owner_info', JSON.stringify(info));
+    }
     localStorage.setItem('profile_name', name);
     localStorage.setItem('profile_village', village);
     document.getElementById('profile-name-display').innerText = name;
     document.querySelector('.greeting').innerText = (currentLang === 'en' ? 'Namaste, ' : 'नमस्ते, ') + name;
     document.getElementById('profile-business-display').innerText = village;
+    const emailEl = document.getElementById('profile-email-display');
+    if (emailEl) emailEl.innerText = email || '';
     toggleProfileEdit(false);
     showToast(currentLang === 'en' ? "Profile Updated!" : "प्रोफाइल अपडेट हो गई!", "success");
 }
@@ -1488,7 +2007,20 @@ window.deleteProfile = async function () {
         ? "Are you sure? This will permanently delete your account and all data. This cannot be undone."
         : "क्या आप सुनिश्चित हैं? यह आपका खाता और सारा डेटा हमेशा के लिए हटा देगा। इसे वापस नहीं लाया जा सकता।";
 
-    if (!confirm(confirmText)) return;
+    showConfirmPopup(
+        currentLang === 'en' ? 'Delete Account' : 'खाता हटाएं',
+        confirmText,
+        currentLang === 'en' ? 'Delete' : 'हटाएं',
+        currentLang === 'en' ? 'Cancel' : 'रद्द करें',
+        () => { proceedDeleteProfile(); },
+        null
+    );
+    return;
+};
+
+async function proceedDeleteProfile() {
+    // continued below — original body continues after this injection point
+
 
     const uid = localStorage.getItem('user_uid');
     const phone = localStorage.getItem('user_phone');
@@ -1578,8 +2110,73 @@ window.deleteProfile = async function () {
 };
 
 /* --- MODALS --- */
+
+window.openHelpModal = function () {
+    const body = document.getElementById('help-modal-body');
+    const role = localStorage.getItem('user_role') || userRole || 'owner';
+    if (currentLang === 'hi') {
+        if (role === 'customer') {
+            body.innerHTML = `
+                <h4 style="color:var(--text); margin-bottom:8px;">ग्राहक के लिए</h4>
+                <ol style="padding-left:18px; margin-bottom:16px;">
+                    <li style="margin-bottom:8px;"><b>लिंक करें</b> — मालिक का 10 अंकों का मोबाइल नंबर डालकर अनुरोध भेजें। मालिक स्वीकार करे तो ट्यूबवेल जुड़ जाएगा।</li>
+                    <li style="margin-bottom:8px;"><b>कतार</b> — मालिक आपको कतार में डाल सकता है। “मेरी कतार स्थिति” पर अपनी बारी देखें।</li>
+                    <li style="margin-bottom:8px;"><b>पानी का उपयोग</b> — जब मालिक आपके नाम पर पानी शुरू/बंद करता है, घंटे और राशि अपने-आप “मेरा उपयोग” में दिखती है।</li>
+                    <li style="margin-bottom:8px;"><b>भुगतान</b> — मालिक जब भुगतान दर्ज करता है, वह “भुगतान” टैब में दिखता है। बाकी रकम डैशबोर्ड पर दिखती है।</li>
+                    <li style="margin-bottom:8px;"><b>कई मालिक</b> — आप एक से अधिक ट्यूबवेल मालिक से जुड़ सकते हैं।</li>
+                </ol>
+                <p style="font-size:13px; color:var(--ios-gray);">सभी रिकॉर्ड सर्वर पर सुरक्षित रहते हैं — फोन बदलने पर भी लॉगिन से डेटा वापस आ जाता है।</p>`;
+        } else {
+            body.innerHTML = `
+                <h4 style="color:var(--text); margin-bottom:8px;">मालिक के लिए</h4>
+                <ol style="padding-left:18px; margin-bottom:16px;">
+                    <li style="margin-bottom:8px;"><b>ग्राहक जोड़ें</b> — नाम + फोन डालें, या ग्राहक के लिंक अनुरोध को स्वीकार करें।</li>
+                    <li style="margin-bottom:8px;"><b>पानी शुरू/बंद</b> — होम पर “पानी शुरू” से ग्राहक चुनें, रेट सेट करें। बंद करने पर घंटे × रेट = बिल, बाकी भुगतान में दिखता है।</li>
+                    <li style="margin-bottom:8px;"><b>पानी का हिसाब (मैनुअल)</b> — अगर पहले से पानी चल चुका हो तो समय डालकर रिकॉर्ड सेव करें।</li>
+                    <li style="margin-bottom:8px;"><b>+ भुगतान</b> — ग्राहक विवरण में नकद/भुगतान दर्ज करें। इससे बही-खाता अपडेट होता है।</li>
+                    <li style="margin-bottom:8px;"><b>कतार</b> — ग्राहक को कतार में डालें। “अगला” और कतार संख्या होम पर दिखती है।</li>
+                    <li style="margin-bottom:8px;"><b>बही-खाता</b> — हर ग्राहक का पूरा लेजर (पानी + भुगतान) यहाँ सुरक्षित रहता है।</li>
+                </ol>
+                <p style="font-size:13px; color:var(--ios-gray);">ग्राहक का ऐप भी उसी रिकॉर्ड को लाइव देखता है — अलग से कुछ भेजने की जरूरत नहीं।</p>`;
+        }
+    } else {
+        if (role === 'customer') {
+            body.innerHTML = `
+                <h4 style="color:var(--text); margin-bottom:8px;">For customers</h4>
+                <ol style="padding-left:18px; margin-bottom:16px;">
+                    <li style="margin-bottom:8px;"><b>Link</b> — Enter the owner’s 10-digit mobile and send a request. When they accept, the tubewell is linked.</li>
+                    <li style="margin-bottom:8px;"><b>Queue</b> — Owner can put you in the queue. Check “My queue position” on My Usage.</li>
+                    <li style="margin-bottom:8px;"><b>Water usage</b> — When the owner starts/stops water in your name, hours and amount appear automatically under My Usage.</li>
+                    <li style="margin-bottom:8px;"><b>Payments</b> — When the owner records a payment, it shows under the Payments tab. Due amount is on your dashboard.</li>
+                    <li style="margin-bottom:8px;"><b>Multiple owners</b> — You can link to more than one tubewell owner.</li>
+                </ol>
+                <p style="font-size:13px; color:var(--ios-gray);">All records are saved on the server — log in again on a new phone to get your data back.</p>`;
+        } else {
+            body.innerHTML = `
+                <h4 style="color:var(--text); margin-bottom:8px;">For tubewell owners</h4>
+                <ol style="padding-left:18px; margin-bottom:16px;">
+                    <li style="margin-bottom:8px;"><b>Add customers</b> — Name + phone, or accept a link request from a customer.</li>
+                    <li style="margin-bottom:8px;"><b>Start / Stop water</b> — On Home, Start water → pick customer → set rate. On Stop, hours × rate = bill and it goes to Pending payments. The customer sees the same record live.</li>
+                    <li style="margin-bottom:8px;"><b>Paani Ka Hisab (manual)</b> — If water already ran, enter start/end time and save a record without using the live timer.</li>
+                    <li style="margin-bottom:8px;"><b>+ Payment</b> — On a customer’s detail page, record cash/UPI received. This updates Bahi-khata for both of you.</li>
+                    <li style="margin-bottom:8px;"><b>Queue</b> — Add customers to the queue. “Next in queue” and queue count show on Home.</li>
+                    <li style="margin-bottom:8px;"><b>Bahi-khata</b> — Full ledger per customer (water + payments) stays here even if they unlink later.</li>
+                </ol>
+                <p style="font-size:13px; color:var(--ios-gray);">Customer app reads the same server records — no need to share bills separately.</p>`;
+        }
+    }
+    openModal('help-modal');
+};
+
 window.openModal = function (id) {
     document.getElementById(id).classList.add('active');
+    if (id === 'start-water-modal') {
+        const rateEl = document.getElementById('start-water-rate');
+        if (rateEl) {
+            const tw = getTubewellData();
+            rateEl.value = tw.rate || 150;
+        }
+    }
 }
 window.closeModal = function (id) {
     document.getElementById(id).classList.remove('active');
@@ -1627,30 +2224,44 @@ document.getElementById('save-water-btn').addEventListener('click', async () => 
         const customerId = document.getElementById('water-customer').value;
         const duration = parseFloat(calcDuration.innerText);
         const today = new Date().toISOString().split('T')[0];
+        const ownerUid = localStorage.getItem('user_uid');
+        const cust = getCustomerById(customerId) || {};
+        const rate = getRate();
         const payload = {
-            business_id: "demo_owner_123",
+            business_id: ownerUid,
             customer_id: customerId,
+            customer_uid: cust.customerUid || ('phone_' + (cust.phone || '')),
+            customer_phone: cust.phone || '',
+            customer_name: cust.name || '',
             start_time: timeStart.value,
             end_time: timeEnd.value,
             duration: duration,
-            rate: getRate(),
+            rate: rate,
             amount: amount,
+            status: 'pending',
+            type: 'water',
+            date: today,
             created_at: safeServerTimestamp()
         };
-        await safeAddDoc(collection(db, "water_usage"), payload);
+        const docRef = await safeAddDoc(collection(db, "water_usage"), payload);
 
         // Save to localStorage for dashboard
         const history = getWaterHistory();
-        history.push({ customerId, date: today, start: timeStart.value, end: timeEnd.value, duration, rate: getRate(), amount, status: 'pending', type: 'water' });
+        history.push({
+            id: docRef.id || ('local_' + Date.now()),
+            customerId, customerUid: payload.customer_uid, customerPhone: payload.customer_phone,
+            date: today, start: timeStart.value, end: timeEnd.value, duration, rate, amount,
+            status: 'pending', type: 'water'
+        });
         saveWaterHistory(history);
 
         const custHistory = JSON.parse(localStorage.getItem('customer_history') || '{}');
         if (!custHistory[customerId]) custHistory[customerId] = [];
-        custHistory[customerId].push({ type: 'water', date: today, start: timeStart.value, end: timeEnd.value, duration, amount, status: 'pending' });
+        custHistory[customerId].push({ type: 'water', date: today, start: timeStart.value, end: timeEnd.value, duration, rate, amount, status: 'pending' });
         localStorage.setItem('customer_history', JSON.stringify(custHistory));
 
-        if (!customerData[customerId]) customerData[customerId] = { name: '', phone: '', history: [] };
-        customerData[customerId].history.push({ type: 'water', date: today, start: timeStart.value, end: timeEnd.value, duration, amount, status: 'pending' });
+        if (!customerData[customerId]) customerData[customerId] = { name: cust.name || '', phone: cust.phone || '', history: [] };
+        customerData[customerId].history.push({ type: 'water', date: today, start: timeStart.value, end: timeEnd.value, duration, rate, amount, status: 'pending' });
 
         updateDashboardStats();
         renderPendingPayments();
@@ -1775,7 +2386,7 @@ window.showView = function (viewId) {
     window.scrollTo({ top: 0, behavior: 'smooth' });
 }
 
-window.savePayment = function () {
+window.savePayment = async function () {
     const amount = parseFloat(document.getElementById('payment-amount').value);
     const date = document.getElementById('payment-date').value;
     const note = document.getElementById('payment-note').value.trim();
@@ -1783,14 +2394,46 @@ window.savePayment = function () {
         showToast(currentLang === 'en' ? "Enter amount and date" : "राशि और तारीख दर्ज करें", "error");
         return;
     }
-    if (!customerData[currentCustomerId]) return;
+    if (!currentCustomerId) return;
+    const cust = getCustomerById(currentCustomerId) || customerData[currentCustomerId] || {};
+    const ownerUid = localStorage.getItem('user_uid');
 
+    // Persist to Firestore so customer sees it too
+    try {
+        await safeAddDoc(collection(db, 'water_usage'), {
+            business_id: ownerUid,
+            customer_id: currentCustomerId,
+            customer_uid: cust.customerUid || ('phone_' + (cust.phone || '')),
+            customer_phone: cust.phone || '',
+            customer_name: cust.name || '',
+            amount,
+            note: note || 'Cash',
+            status: 'paid',
+            type: 'payment',
+            date,
+            created_at: safeServerTimestamp()
+        });
+    } catch (e) { console.error('Payment save FS failed', e); }
+
+    if (!customerData[currentCustomerId]) customerData[currentCustomerId] = { name: cust.name || '', phone: cust.phone || '', history: [] };
     customerData[currentCustomerId].history.push({ type: 'payment', date, amount, note: note || 'Cash' });
 
     const custHistory = JSON.parse(localStorage.getItem('customer_history') || '{}');
     if (!custHistory[currentCustomerId]) custHistory[currentCustomerId] = [];
     custHistory[currentCustomerId].push({ type: 'payment', date, amount, note: note || 'Cash' });
     localStorage.setItem('customer_history', JSON.stringify(custHistory));
+
+    // Mark matching pending water entries as paid locally (FIFO by amount is complex — mark all pending of this customer as partial via history only)
+    const history = getWaterHistory();
+    let remaining = amount;
+    for (let i = 0; i < history.length && remaining > 0; i++) {
+        const h = history[i];
+        if (h.customerId === currentCustomerId && h.type === 'water' && h.status === 'pending') {
+            h.status = 'paid';
+            remaining -= (h.amount || 0);
+        }
+    }
+    saveWaterHistory(history);
 
     document.getElementById('payment-amount').value = '';
     document.getElementById('payment-note').value = '';
@@ -1946,12 +2589,20 @@ function setupOwnerUI() {
     document.getElementById('role-badge-text').innerText = currentLang === 'en' ? 'Owner Account' : 'मालिक खाता';
     document.getElementById('role-badge-text').style.background = 'rgba(0,122,255,0.1)';
     document.getElementById('role-badge-text').style.color = 'var(--ios-blue)';
+    const prb = document.getElementById('profile-role-badge');
+    if (prb) {
+        prb.innerText = currentLang === 'en' ? 'Owner' : 'मालिक';
+        prb.style.background = 'rgba(0,122,255,0.1)';
+        prb.style.color = 'var(--ios-blue)';
+    }
 
     loadCustomerData();
     populateCustomerDropdowns();
     renderCustomers();
     renderStatusCard();
+    loadDailyNote();
     renderQueue();
+    if (typeof renderNextInQueue === 'function') renderNextInQueue();
     updateDashboardStats();
     renderPendingPayments();
     startOwnerListeners();
@@ -2003,6 +2654,10 @@ function setupCustomerUI() {
             const target = document.getElementById(targetId);
             if (target) target.classList.add('active');
             window.scrollTo({ top: 0, behavior: 'smooth' });
+            if (targetId === 'view-customer-usage' || targetId === 'view-my-payments') {
+                if (typeof renderCustomerUsageDashboard === 'function') renderCustomerUsageDashboard();
+            }
+            if (targetId === 'view-my-tubewell' && typeof renderMyTubewell === 'function') renderMyTubewell();
         });
     });
 
@@ -2026,9 +2681,27 @@ function setupCustomerUI() {
     document.getElementById('role-badge-text').innerText = currentLang === 'en' ? 'Customer' : 'ग्राहक';
     document.getElementById('role-badge-text').style.background = 'rgba(52,199,89,0.1)';
     document.getElementById('role-badge-text').style.color = 'var(--ios-green)';
+    const prb = document.getElementById('profile-role-badge');
+    if (prb) {
+        prb.innerText = currentLang === 'en' ? 'Customer' : 'ग्राहक';
+        prb.style.background = 'rgba(52,199,89,0.1)';
+        prb.style.color = 'var(--ios-green)';
+    }
+    // Fill customer profile page
+    const info = JSON.parse(localStorage.getItem('user_info') || '{}');
+    const setTxt = (id, val) => { const el = document.getElementById(id); if (el) el.innerText = val || '—'; };
+    setTxt('cust-profile-name', info.name);
+    setTxt('cust-profile-village', info.village);
+    setTxt('cust-profile-phone', localStorage.getItem('user_phone') || info.phone);
+    setTxt('cust-profile-email', info.email);
+    setTxt('profile-name-display', info.name);
+    setTxt('profile-business-display', info.village);
+    setTxt('profile-email-display', info.email);
+
     renderCustomerLinkedTubewell().then(() => {
         renderCustomerQueuePosition();
         renderMyTubewell();
+        if (typeof renderCustomerUsageDashboard === 'function') renderCustomerUsageDashboard();
     });
 
     // Check if there's a pending request and verify its status from Firestore
@@ -2062,19 +2735,24 @@ function setupCustomerUI() {
 
 
 window.becomeOwner = function () {
-    if (!confirm(currentLang === 'en' ? "Switch to owner mode? Your customer data will be preserved." : "मालिक मोड में स्विच करें? आपका ग्राहक डेटा सुरक्षित रहेगा।")) {
-        return;
-    }
-    userRole = 'owner';
-    localStorage.setItem('user_role', 'owner');
-
-    // Hide customer UI, show basic info for owner onboarding
-    document.getElementById('app-shell').style.display = 'none';
-    document.querySelectorAll('.main-view').forEach(v => v.classList.remove('active'));
-    document.querySelectorAll('.customer-only').forEach(v => v.style.display = 'none');
-
-    document.getElementById('basic-info-screen').classList.add('active');
-    showToast(currentLang === 'en' ? "Complete your owner profile" : "अपना मालिक प्रोफाइल पूरा करें", "info");
+    showConfirmPopup(
+        currentLang === 'en' ? 'Become Owner' : 'मालिक बनें',
+        currentLang === 'en' ? "Switch to owner mode? Your customer data will be preserved." : "मालिक मोड में स्विच करें? आपका ग्राहक डेटा सुरक्षित रहेगा।",
+        currentLang === 'en' ? 'Continue' : 'जारी रखें',
+        currentLang === 'en' ? 'Cancel' : 'रद्द करें',
+        () => {
+            userRole = 'owner';
+            localStorage.setItem('user_role', 'owner');
+            document.getElementById('app-shell').style.display = 'none';
+            document.querySelectorAll('.main-view').forEach(v => v.classList.remove('active'));
+            document.querySelectorAll('.customer-only').forEach(v => v.style.display = 'none');
+            const extra = document.getElementById('owner-extra-fields');
+            if (extra) extra.style.display = 'block';
+            document.getElementById('basic-info-screen').classList.add('active');
+            showToast(currentLang === 'en' ? "Complete your owner profile" : "अपना मालिक प्रोफाइल पूरा करें", "info");
+        },
+        null
+    );
 }
 
 
@@ -2150,3 +2828,8 @@ if (savedUser) {
 // Initialize data
 loadCustomerData();
 populateCustomerDropdowns();
+// Set max DOB to today
+(function () {
+    const dob = document.getElementById('login-dob');
+    if (dob) dob.max = new Date().toISOString().split('T')[0];
+})();

@@ -112,6 +112,30 @@ function populateCustomerDropdowns() {
     }
 }
 
+function waterKey(r) {
+    return r.id || `${r.date}|${r.start || r.start_time || ''}|${r.amount}`;
+}
+
+/** Payments applied to water bills oldest-first. Returns Set of settled water keys. */
+function getSettledWaterKeys(waterList, paymentsList) {
+    const totalPaid = (paymentsList || []).reduce((s, p) => s + (parseFloat(p.amount) || 0), 0);
+    let creditLeft = totalPaid;
+    const settled = new Set();
+    const sorted = (waterList || []).slice().sort((a, b) =>
+        (a.date || '').localeCompare(b.date || '') ||
+        ((a.start || a.start_time || '') + '').localeCompare((b.start || b.start_time || '') + '')
+    );
+    sorted.forEach(r => {
+        const amt = parseFloat(r.amount) || 0;
+        const key = waterKey(r);
+        if (creditLeft >= amt) {
+            settled.add(key);
+            creditLeft -= amt;
+        }
+    });
+    return settled;
+}
+
 /* --- TUBEWELL STATUS --- */
 window.renderStatusCard = function () {
     const tw = getTubewellData();
@@ -296,6 +320,9 @@ window.stopWaterSession = async function () {
     const customerPhone = cust.phone || '';
     const customerName = cust.name || '';
 
+    const ownerInfo = JSON.parse(localStorage.getItem('user_info') || localStorage.getItem('owner_info') || '{}');
+    const twLocal = getTubewellData();
+
     // Save usage to Firestore — full fields so customer app can query it
     const usageRef = doc(collection(db, 'water_usage'));
     const usagePayload = {
@@ -312,7 +339,10 @@ window.stopWaterSession = async function () {
         status: 'pending',
         type: 'water',
         date: today,
-        created_at: safeServerTimestamp()
+        created_at: safeServerTimestamp(),
+        owner_name: ownerInfo.name || '',
+        owner_phone: localStorage.getItem('user_phone') || '',
+        tubewell_name: twLocal.name || tw.name || 'Tubewell'
     };
     await safeSetDoc(usageRef, usagePayload);
 
@@ -548,31 +578,36 @@ window.openBahiLedger = function (id) {
         return;
     }
 
-    let totalDue = 0, totalPaid = 0, runningBalance = 0;
+    const waters = history.filter(e => e.type === 'water');
+    const pays = history.filter(e => e.type !== 'water');
 
-    // Sort by date ascending for ledger
+    const allWaterAmt = waters.reduce((s, w) => s + (parseFloat(w.amount) || 0), 0);
+    const allPaidAmt = pays.reduce((s, p) => s + (parseFloat(p.amount) || 0), 0);
+    const netDue = Math.max(0, allWaterAmt - allPaidAmt);   // ₹0 for Suraj
+    const finalBalance = allWaterAmt - allPaidAmt;            // ₹-315 for Suraj
+
     const sorted = history.slice().sort((a, b) => new Date(a.date) - new Date(b.date));
+    let runningBalance = 0;
 
     const ledgerRows = sorted.map(entry => {
         let debit = 0, credit = 0, desc = '';
         if (entry.type === 'water') {
-            debit = entry.amount;
-            totalDue += entry.amount;
+            debit = entry.amount || 0;
+            runningBalance += debit;
             desc = 'Water: ' + entry.start + '-' + entry.end + ' (' + entry.duration + ' hrs)';
         } else {
-            credit = entry.amount;
-            totalPaid += entry.amount;
+            credit = entry.amount || 0;
+            runningBalance -= credit;
             desc = 'Payment: ' + (entry.note || 'Cash');
         }
-        runningBalance = totalDue - totalPaid;
 
         return '<div class="list-item" style="flex-direction: column; align-items: flex-start; gap: 4px;"><div style="display:flex; justify-content:space-between; width:100%;"><div class="item-info"><h4>' + desc + '</h4><p style="font-size:12px; color:var(--ios-gray);">' + entry.date + '</p></div><div style="text-align:right; min-width:80px;"><div style="font-size:13px; color:var(--ios-red);">' + (debit ? '₹' + debit : '') + '</div><div style="font-size:13px; color:var(--ios-green);">' + (credit ? '₹' + credit : '') + '</div></div></div><div style="width:100%; text-align:right; font-size:12px; color:var(--ios-gray); border-top:1px solid var(--ios-border); padding-top:4px;">Balance: <strong style="color:' + (runningBalance > 0 ? 'var(--ios-red)' : 'var(--ios-green)') + ';">₹' + runningBalance + '</strong></div></div>';
     }).join('');
 
     list.innerHTML = ledgerRows;
-    document.getElementById('bahi-total-due').innerText = '₹' + totalDue;
-    document.getElementById('bahi-total-paid').innerText = '₹' + totalPaid;
-    document.getElementById('bahi-balance').innerText = '₹' + runningBalance;
+    document.getElementById('bahi-total-due').innerText = '₹' + netDue;
+    document.getElementById('bahi-total-paid').innerText = '₹' + allPaidAmt;
+    document.getElementById('bahi-balance').innerText = '₹' + finalBalance;
     showView('view-bahi-ledger');
 };
 
@@ -629,14 +664,35 @@ window.updateDashboardStats = function () {
         return dateStr === today;
     };
 
-    history.forEach(e => {
-        if (e.type === 'water' && inRange(e.date)) {
-            hours += e.duration || 0;
-            revenue += e.amount || 0;
-            if (e.status === 'paid') received += e.amount;
-            else if (e.status === 'pending') pending += e.amount;
+    const periodWater = history.filter(e => e.type === 'water' && inRange(e.date));
+    const periodPay = history.filter(e => e.type === 'payment' && inRange(e.date));
+
+    // For settlement, use ALL payments for that customer (not only in period),
+    // so advance paid earlier still covers today's water.
+    const custHistory = JSON.parse(localStorage.getItem('customer_history') || '{}');
+
+    periodWater.forEach(e => {
+        hours += e.duration || 0;
+        revenue += e.amount || 0;
+    });
+
+    // Received in period = payments in period
+    periodPay.forEach(e => { received += e.amount || 0; });
+
+    // Pending = water in period not covered by that customer's total payments
+    periodWater.forEach(e => {
+        const cid = e.customerId;
+        const pays = (custHistory[cid] || []).filter(x => x.type === 'payment')
+            .concat(history.filter(h => h.customerId === cid && h.type === 'payment'));
+        const watersForCust = history.filter(h => h.customerId === cid && h.type === 'water');
+        const settled = getSettledWaterKeys(watersForCust, pays);
+        if (e.status === 'paid' || settled.has(waterKey(e))) {
+            // already covered — count toward received if you want period paid water
+        } else {
+            pending += e.amount || 0;
         }
     });
+
     const hrsEl = document.getElementById('stat-hours');
     if (hrsEl) hrsEl.innerHTML = hours.toFixed(1) + ' <small data-i18n="hrs">' + locales[currentLang].hrs + '</small>';
     const revEl = document.getElementById('stat-revenue');
@@ -666,23 +722,44 @@ function loadDailyNote() {
     input.value = notes[today] || '';
 }
 
-
 window.renderPendingPayments = function () {
     const history = getWaterHistory();
-    const pending = history.filter(h => h.status === 'pending' && h.type === 'water');
     const list = document.getElementById('pending-payments-list');
     if (!list) return;
-    if (pending.length === 0) {
+
+    const custHistory = JSON.parse(localStorage.getItem('customer_history') || '{}');
+    const water = history.filter(h => h.type === 'water');
+    const byCustomer = {};
+
+    water.forEach(e => {
+        const cid = e.customerId;
+        const pays = (custHistory[cid] || []).filter(x => x.type === 'payment');
+        // Also include payments stored only in water_history if any
+        const paysFromHistory = history.filter(h => h.customerId === cid && h.type === 'payment');
+        const allPays = pays.concat(paysFromHistory);
+        const watersForCust = water.filter(w => w.customerId === cid);
+        const settled = getSettledWaterKeys(watersForCust, allPays);
+        if (settled.has(waterKey(e)) || e.status === 'paid') return;
+        if (!byCustomer[cid]) byCustomer[cid] = 0;
+        byCustomer[cid] += e.amount || 0;
+    });
+
+    if (Object.keys(byCustomer).length === 0) {
         list.innerHTML = '<div class="list-item empty-state"><div class="item-info"><p data-i18n="noPendingPayments">' + locales[currentLang].noPendingPayments + '</p></div></div>';
         return;
     }
-    const byCustomer = {};
-    pending.forEach(e => { if (!byCustomer[e.customerId]) byCustomer[e.customerId] = 0; byCustomer[e.customerId] += e.amount; });
+
     list.innerHTML = Object.entries(byCustomer).map(([cid, amt]) => {
+        if (amt <= 0) return '';
         const c = getCustomerById(cid);
         return '<div class="list-item"><div class="item-info"><h4>' + (c ? c.name : 'Unknown') + '</h4><p>' + (c ? c.phone : '') + '</p></div><div class="item-value text-red">₹' + amt + '</div></div>';
-    }).join('');
-}
+    }).filter(Boolean).join('');
+
+    if (!list.innerHTML) {
+        list.innerHTML = '<div class="list-item empty-state"><div class="item-info"><p data-i18n="noPendingPayments">' + locales[currentLang].noPendingPayments + '</p></div></div>';
+    }
+};
+
 
 /* --- CUSTOMER ROLE: LINK TO TUBEWELL --- */
 window.renderCustomerLinkedTubewell = async function () {
@@ -1255,6 +1332,38 @@ window.loadCustomerUsageFromServer = async function () {
     return records;
 };
 
+// Cache owner names
+const ownerNameCache = {};
+async function getOwnerLabel(businessId) {
+    if (!businessId) return currentLang === 'en' ? 'Unknown owner' : 'अज्ञात मालिक';
+    if (ownerNameCache[businessId]) return ownerNameCache[businessId];
+    try {
+        const od = await getDoc(doc(db, 'users', businessId));
+        if (od.exists()) {
+            const d = od.data();
+            ownerNameCache[businessId] = (d.name || '') + (d.phone ? ' · ' + d.phone : '');
+            return ownerNameCache[businessId];
+        }
+    } catch (e) { }
+    ownerNameCache[businessId] = businessId;
+    return businessId;
+}
+
+async function getOwnerAndTubewell(businessId) {
+    let ownerName = currentLang === 'en' ? 'Owner' : 'मालिक';
+    let twName = currentLang === 'en' ? 'Tubewell' : 'ट्यूबवेल';
+    if (!businessId) return { ownerName, twName };
+    try {
+        const u = await getDoc(doc(db, 'users', businessId));
+        if (u.exists()) ownerName = u.data().name || ownerName;
+    } catch (e) { }
+    try {
+        const t = await getDoc(doc(db, 'tubewells', businessId + '_primary'));
+        if (t.exists()) twName = t.data().name || twName;
+    } catch (e) { }
+    return { ownerName, twName };
+}
+
 window.renderCustomerUsageDashboard = async function () {
     const records = await loadCustomerUsageFromServer();
     const water = records.filter(r => r.type === 'water' || (!r.type && r.duration != null));
@@ -1283,23 +1392,69 @@ window.renderCustomerUsageDashboard = async function () {
         if (water.length === 0) {
             list.innerHTML = '<div class="list-item empty-state"><div class="item-info"><p>' + (currentLang === 'en' ? 'No usage yet' : 'अभी कोई उपयोग नहीं') + '</p></div></div>';
         } else {
-            list.innerHTML = water.map(r => {
-                const st = r.status === 'paid'
-                    ? '<span style="font-size:11px;color:var(--ios-green);">PAID</span>'
-                    : '<span style="font-size:11px;color:var(--ios-red);">PENDING</span>';
-                return '<div class="list-item"><div class="item-info"><h4>' + (currentLang === 'en' ? 'Water' : 'पानी') + '</h4><p>' + (r.date || '') + ' · ' + (r.start_time || '') + ' - ' + (r.end_time || '') + ' · ' + (r.duration || 0) + ' hrs</p></div><div style="text-align:right;"><div class="item-value ' + (r.status === 'pending' ? 'text-red' : 'text-green') + '">₹' + (r.amount || 0) + '</div>' + st + '</div></div>';
-            }).join('');
+            // Apply payments against water (oldest first)
+            let creditLeft = totalPaid;
+            const waterSorted = water.slice().sort((a, b) =>
+                (a.date || '').localeCompare(b.date || '') ||
+                (a.start_time || '').localeCompare(b.start_time || '')
+            );
+            const settledIds = new Set();
+            waterSorted.forEach(r => {
+                const amt = parseFloat(r.amount) || 0;
+                if (creditLeft >= amt) {
+                    settledIds.add(r.id || (r.date + r.start_time + amt));
+                    creditLeft -= amt;
+                }
+            });
+
+            Promise.all(water.map(async r => {
+                const { ownerName, twName } = await getOwnerAndTubewell(r.business_id);
+                const key = r.id || (r.date + r.start_time + (r.amount || 0));
+                const isSettled = r.status === 'paid' || settledIds.has(key) || settledIds.has(r.id);
+                return { r, ownerName, twName, isSettled };
+            })).then(rows => {
+                list.innerHTML = rows.map(({ r, ownerName, twName, isSettled }) => {
+                    const st = isSettled
+                        ? '<span style="font-size:11px;color:var(--ios-green);">PAID</span>'
+                        : '<span style="font-size:11px;color:var(--ios-red);">PENDING</span>';
+                    return '<div class="list-item"><div class="item-info">' +
+                        '<h4>' + (currentLang === 'en' ? 'Water' : 'पानी') + '</h4>' +
+                        '<p>' + (r.date || '') + ' · ' + (r.start_time || '') + ' - ' + (r.end_time || '') +
+                        ' · ' + (r.duration || 0) + ' hrs</p>' +
+                        '<p style="font-size:12px;color:var(--ios-blue);margin-top:2px;">' +
+                        twName + ' · ' + ownerName +
+                        '</p></div>' +
+                        '<div style="text-align:right;"><div class="item-value ' +
+                        (isSettled ? 'text-green' : 'text-red') + '">₹' + (r.amount || 0) +
+                        '</div>' + st + '</div></div>';
+                }).join('');
+            });
         }
     }
 
+    // When building payList — make the map async-friendly:
     const payList = document.getElementById('customer-payments-list');
     if (payList) {
         if (payments.length === 0) {
-            payList.innerHTML = '<div class="list-item empty-state"><div class="item-info"><p>' + (currentLang === 'en' ? 'No payments yet' : 'अभी कोई भुगतान नहीं') + '</p></div></div>';
+            payList.innerHTML = '<div class="list-item empty-state"><div class="item-info"><p>' +
+                (currentLang === 'en' ? 'No payments yet' : 'अभी कोई भुगतान नहीं') +
+                '</p></div></div>';
         } else {
-            payList.innerHTML = payments.map(r => {
-                return '<div class="list-item"><div class="item-info"><h4>' + (r.note || (currentLang === 'en' ? 'Payment' : 'भुगतान')) + '</h4><p>' + (r.date || '') + '</p></div><div class="item-value text-green">₹' + (r.amount || 0) + '</div></div>';
-            }).join('');
+            // Resolve names then render
+            Promise.all(payments.map(async r => {
+                const ownerLabel = await getOwnerLabel(r.business_id);
+                return { r, ownerLabel };
+            })).then(rows => {
+                payList.innerHTML = rows.map(({ r, ownerLabel }) => {
+                    return '<div class="list-item"><div class="item-info">' +
+                        '<h4>' + (r.note || (currentLang === 'en' ? 'Cash' : 'नकद')) + '</h4>' +
+                        '<p>' + (r.date || '') + '</p>' +
+                        '<p style="font-size:12px;color:var(--ios-blue);margin-top:2px;">' +
+                        (currentLang === 'en' ? 'To: ' : 'को: ') + ownerLabel +
+                        '</p></div>' +
+                        '<div class="item-value text-green">₹' + (r.amount || 0) + '</div></div>';
+                }).join('');
+            });
         }
     }
 };
@@ -2227,6 +2382,8 @@ document.getElementById('save-water-btn').addEventListener('click', async () => 
         const ownerUid = localStorage.getItem('user_uid');
         const cust = getCustomerById(customerId) || {};
         const rate = getRate();
+        const ownerInfo = JSON.parse(localStorage.getItem('user_info') || '{}');
+        const twLocal = getTubewellData();
         const payload = {
             business_id: ownerUid,
             customer_id: customerId,
@@ -2241,7 +2398,10 @@ document.getElementById('save-water-btn').addEventListener('click', async () => 
             status: 'pending',
             type: 'water',
             date: today,
-            created_at: safeServerTimestamp()
+            created_at: safeServerTimestamp(),
+            owner_name: ownerInfo.name || '',
+            owner_phone: localStorage.getItem('user_phone') || '',
+            tubewell_name: twLocal.name || 'Tubewell'
         };
         const docRef = await safeAddDoc(collection(db, "water_usage"), payload);
 
@@ -2326,16 +2486,15 @@ window.addNewTubewell = async function () {
 }
 
 /* --- CUSTOMER DETAIL VIEW --- */
-let currentCustomerId = null;
+window.currentCustomerId = null;
 
 const customerData = {
 };
 
 window.openCustomerDetail = function (id) {
-    currentCustomerId = id;
+    window.currentCustomerId = id;
     const cust = customerData[id];
     if (!cust) {
-        // Try loading from localStorage
         const customers = getCustomers();
         const found = customers.find(c => c.id === id);
         if (found) {
@@ -2358,15 +2517,21 @@ window.openCustomerDetail = function (id) {
         return;
     }
 
+    const waters = allHistory.filter(e => e.type === 'water');
+    const pays = allHistory.filter(e => e.type === 'payment');
+    const settled = getSettledWaterKeys(waters, pays);
+
     let totalDue = 0, totalPaid = 0, totalHours = 0, lastEntry = '-';
+
     historyList.innerHTML = allHistory.slice().reverse().map((entry, idx) => {
         if (entry.type === 'water') {
-            if (entry.status === 'pending') totalDue += entry.amount;
-            totalHours += entry.duration;
+            totalHours += entry.duration || 0;
             if (idx === 0) lastEntry = entry.date;
-            return '<div class="list-item"><div class="item-info"><h4>Water Usage</h4><p>' + entry.date + ' • ' + entry.start + ' - ' + entry.end + ' • ' + entry.duration + ' hrs</p></div><div style="text-align: right;"><div class="item-value ' + (entry.status === 'pending' ? 'text-red' : 'text-green') + '">₹' + entry.amount + '</div><span style="font-size: 11px; color: var(--ios-gray); text-transform: uppercase;">' + entry.status + '</span></div></div>';
+            const isSettled = entry.status === 'paid' || settled.has(waterKey(entry));
+            if (!isSettled) totalDue += entry.amount || 0;
+            return '<div class="list-item"><div class="item-info"><h4>Water Usage</h4><p>' + entry.date + ' • ' + entry.start + ' - ' + entry.end + ' • ' + entry.duration + ' hrs</p></div><div style="text-align: right;"><div class="item-value ' + (isSettled ? 'text-green' : 'text-red') + '">₹' + entry.amount + '</div><span style="font-size: 11px; color: var(--ios-gray); text-transform: uppercase;">' + (isSettled ? 'paid' : 'pending') + '</span></div></div>';
         } else {
-            totalPaid += entry.amount;
+            totalPaid += entry.amount || 0;
             if (idx === 0) lastEntry = entry.date;
             return '<div class="list-item"><div class="item-info"><h4>Payment</h4><p>' + entry.date + ' • ' + (entry.note || 'Cash') + '</p></div><div class="item-value text-green">-₹' + entry.amount + '</div></div>';
         }
@@ -2377,7 +2542,7 @@ window.openCustomerDetail = function (id) {
     document.getElementById('cust-total-hours').innerHTML = totalHours.toFixed(1) + ' <small>Hrs</small>';
     document.getElementById('cust-last-entry').innerText = lastEntry;
     showView('view-customer-detail');
-}
+};
 
 window.showView = function (viewId) {
     views.forEach(view => view.classList.remove('active'));
@@ -2394,15 +2559,15 @@ window.savePayment = async function () {
         showToast(currentLang === 'en' ? "Enter amount and date" : "राशि और तारीख दर्ज करें", "error");
         return;
     }
-    if (!currentCustomerId) return;
-    const cust = getCustomerById(currentCustomerId) || customerData[currentCustomerId] || {};
+    if (!window.currentCustomerId) return;
+    const cust = getCustomerById(window.currentCustomerId) || customerData[window.currentCustomerId] || {};
     const ownerUid = localStorage.getItem('user_uid');
 
     // Persist to Firestore so customer sees it too
     try {
         await safeAddDoc(collection(db, 'water_usage'), {
             business_id: ownerUid,
-            customer_id: currentCustomerId,
+            customer_id: window.currentCustomerId,
             customer_uid: cust.customerUid || ('phone_' + (cust.phone || '')),
             customer_phone: cust.phone || '',
             customer_name: cust.name || '',
@@ -2411,16 +2576,18 @@ window.savePayment = async function () {
             status: 'paid',
             type: 'payment',
             date,
-            created_at: safeServerTimestamp()
+            created_at: safeServerTimestamp(),
+            owner_name: (JSON.parse(localStorage.getItem('user_info') || '{}').name || ''),
+            owner_phone: localStorage.getItem('user_phone') || '',
         });
     } catch (e) { console.error('Payment save FS failed', e); }
 
-    if (!customerData[currentCustomerId]) customerData[currentCustomerId] = { name: cust.name || '', phone: cust.phone || '', history: [] };
-    customerData[currentCustomerId].history.push({ type: 'payment', date, amount, note: note || 'Cash' });
+    if (!customerData[window.currentCustomerId]) customerData[window.currentCustomerId] = { name: cust.name || '', phone: cust.phone || '', history: [] };
+    customerData[window.currentCustomerId].history.push({ type: 'payment', date, amount, note: note || 'Cash' });
 
     const custHistory = JSON.parse(localStorage.getItem('customer_history') || '{}');
-    if (!custHistory[currentCustomerId]) custHistory[currentCustomerId] = [];
-    custHistory[currentCustomerId].push({ type: 'payment', date, amount, note: note || 'Cash' });
+    if (!custHistory[window.currentCustomerId]) custHistory[window.currentCustomerId] = [];
+    custHistory[window.currentCustomerId].push({ type: 'payment', date, amount, note: note || 'Cash' });
     localStorage.setItem('customer_history', JSON.stringify(custHistory));
 
     // Mark matching pending water entries as paid locally (FIFO by amount is complex — mark all pending of this customer as partial via history only)
@@ -2428,7 +2595,7 @@ window.savePayment = async function () {
     let remaining = amount;
     for (let i = 0; i < history.length && remaining > 0; i++) {
         const h = history[i];
-        if (h.customerId === currentCustomerId && h.type === 'water' && h.status === 'pending') {
+        if (h.customerId === window.currentCustomerId && h.type === 'water' && h.status === 'pending') {
             h.status = 'paid';
             remaining -= (h.amount || 0);
         }
@@ -2438,7 +2605,7 @@ window.savePayment = async function () {
     document.getElementById('payment-amount').value = '';
     document.getElementById('payment-note').value = '';
     closeModal('payment-modal');
-    openCustomerDetail(currentCustomerId);
+    openCustomerDetail(window.currentCustomerId);
     updateDashboardStats();
     renderPendingPayments();
     showToast(currentLang === 'en' ? "Payment Saved!" : "भुगतान सेव हो गया!", "success");

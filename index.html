@@ -512,15 +512,15 @@
             </div>
 
             <div style="display: flex; gap: 10px; margin-bottom: 16px; flex-wrap: wrap;">
-                <button class="btn-primary" style="padding: 12px; flex: 2; font-size: 15px; min-width: 120px;"
+                <button class="btn-primary" style="padding: 12px; font-size: 15px; min-width: 120px;"
                     onclick="openModal('payment-modal')">+ Add Payment</button>
                 <button class="btn-action secondary-action"
                     style="padding: 12px; flex: 1; font-size: 15px; min-width: 100px;"
-                    onclick="openModal('water-modal'); document.getElementById('water-customer').value = currentCustomerId;">+
+                    onclick="openModal('water-modal'); if (window.currentCustomerId) document.getElementById('water-customer').value = window.currentCustomerId;">+
                     Water</button>
                 <button class="btn-action secondary-action"
                     style="padding: 12px; flex: 1; font-size: 15px; min-width: 100px; background: rgba(0,122,255,0.1); color: var(--ios-blue);"
-                    onclick="addCustomerToQueue(currentCustomerId)" data-i18n="addToQueue">+ Queue</button>
+                    onclick="addCustomerToQueue(window.currentCustomerId)" data-i18n="addToQueue">+ Queue</button>
             </div>
 
             <h3 class="section-title">History</h3>

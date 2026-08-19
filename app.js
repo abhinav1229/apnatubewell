@@ -599,7 +599,7 @@ window.openBahiLedger = function (id) {
         } else {
             credit = entry.amount || 0;
             runningBalance -= credit;
-            desc = 'Payment: ' + (entry.note || 'Cash');
+            desc = 'Payment · ' + (entry.mode || 'Cash') + (entry.note ? ' · ' + entry.note : '');
         }
 
         return '<div class="list-item" style="flex-direction: column; align-items: flex-start; gap: 4px;"><div style="display:flex; justify-content:space-between; width:100%;"><div class="item-info"><h4>' + desc + '</h4><p style="font-size:12px; color:var(--ios-gray);">' + entry.date + '</p></div><div style="text-align:right; min-width:80px;"><div style="font-size:13px; color:var(--ios-red);">' + (debit ? '₹' + debit : '') + '</div><div style="font-size:13px; color:var(--ios-green);">' + (credit ? '₹' + credit : '') + '</div></div></div><div style="width:100%; text-align:right; font-size:12px; color:var(--ios-gray); border-top:1px solid var(--ios-border); padding-top:4px;">Balance: <strong style="color:' + (runningBalance > 0 ? 'var(--ios-red)' : 'var(--ios-green)') + ';">₹' + runningBalance + '</strong></div></div>';
@@ -1539,7 +1539,14 @@ window.syncOwnerUsageFromServer = async function () {
                 });
             } else if (r.type === 'payment') {
                 if (!custHistory[cid]) custHistory[cid] = [];
-                custHistory[cid].push({ type: 'payment', date: r.date, amount: r.amount, note: r.note || 'Cash' });
+                custHistory[cid].push({
+                    id: d.id,
+                    type: 'payment',
+                    date: r.date,
+                    amount: r.amount,
+                    mode: r.mode || (r.note === 'Cash' || r.note === 'UPI' || r.note === 'Online' || r.note === 'Bank' ? r.note : 'Cash'),
+                    note: r.note || ''
+                });
             }
         });
         saveWaterHistory(history);
@@ -2010,6 +2017,30 @@ document.getElementById('send-otp-btn').addEventListener('click', async () => {
         if (userDoc.exists()) {
             const existingUser = userDoc.data();
 
+            if (existingUser.accountStatus === 'deleted') {
+                showConfirmPopup(
+                    currentLang === 'en' ? 'Account deleted' : 'खाता हटाया गया',
+                    currentLang === 'en'
+                        ? 'This account was deleted. Do you want to register again with this number?'
+                        : 'यह खाता हटा दिया गया था। क्या आप इसी नंबर से फिर पंजीकरण करना चाहते हैं?',
+                    currentLang === 'en' ? 'Register again' : 'फिर पंजीकरण',
+                    currentLang === 'en' ? 'Cancel' : 'रद्द करें',
+                    function () {
+                        isRegisterMode = true;
+                        const btn = document.getElementById('send-otp-btn');
+                        if (btn) btn.innerText = currentLang === 'en' ? 'Register' : 'पंजीकरण करें';
+                        const msg = document.getElementById('register-confirm-msg');
+                        if (msg) msg.style.display = 'block';
+                        showToast(
+                            currentLang === 'en' ? 'Confirm details and tap Register' : 'विवरण की पुष्टि करें और पंजीकरण पर टैप करें',
+                            'info'
+                        );
+                    },
+                    null
+                );
+                return;
+            }
+
             // Verify DOB
             if (existingUser.dob && existingUser.dob !== dobInput) {
                 showToast(currentLang === 'en' ? "Wrong Date of Birth. Please check details." : "गलत जन्म तिथि। कृपया विवरण जांचें।", "error");
@@ -2179,6 +2210,15 @@ document.getElementById('save-basic-info-btn').addEventListener('click', async (
         roles: roles,
         updatedAt: safeServerTimestamp()
     };
+
+    if (existingSnap.exists() && existingSnap.data().accountStatus === 'deleted') {
+        // Fresh start after full soft-delete
+        roles = [userRole];
+        userData.accountStatus = 'active';
+        userData.deletedAt = null;
+    }
+
+
     if (!existingSnap.exists()) {
         userData.createdAt = safeServerTimestamp();
     }
@@ -2190,6 +2230,7 @@ document.getElementById('save-basic-info-btn').addEventListener('click', async (
     }
 
     localStorage.setItem('is_logged_in', 'true');
+    localStorage.setItem('user_roles', JSON.stringify(roles));
     localStorage.setItem('user_role', userRole);
     localStorage.setItem('user_info', JSON.stringify({ name, village, phone, email: existingEmail, dob }));
 
@@ -2288,111 +2329,226 @@ window.saveProfile = async function () {
 }
 
 window.deleteProfile = async function () {
-    const confirmText = currentLang === 'en'
-        ? "Are you sure? This will permanently delete your account and all data. This cannot be undone."
-        : "क्या आप सुनिश्चित हैं? यह आपका खाता और सारा डेटा हमेशा के लिए हटा देगा। इसे वापस नहीं लाया जा सकता।";
+    const uid = localStorage.getItem('user_uid');
+    if (!uid) {
+        logout();
+        return;
+    }
+
+    // Load roles from server (fallback to local)
+    let roles = JSON.parse(localStorage.getItem('user_roles') || '[]');
+    try {
+        const snap = await getDoc(doc(db, 'users', uid));
+        if (snap.exists()) {
+            const d = snap.data();
+            roles = Array.isArray(d.roles)
+                ? d.roles
+                : (d.role ? [d.role] : roles);
+        }
+    } catch (e) {
+        console.error(e);
+    }
+
+    const hasOwner = roles.includes('owner');
+    const hasCustomer = roles.includes('customer');
+    const currentRole = localStorage.getItem('user_role') || userRole;
+
+    // Both roles → ask Customer | Owner | Both
+    if (hasOwner && hasCustomer) {
+        showDeleteRoleChooser(function (choice) {
+            // choice: 'customer' | 'owner' | 'both'
+            proceedSoftDelete(choice);
+        });
+        return;
+    }
+
+    // Only one role → simple confirm
+    const onlyRole = hasOwner ? 'owner' : (hasCustomer ? 'customer' : currentRole);
+    const label = onlyRole === 'owner'
+        ? (currentLang === 'en' ? 'Owner' : 'मालिक')
+        : (currentLang === 'en' ? 'Customer' : 'ग्राहक');
 
     showConfirmPopup(
-        currentLang === 'en' ? 'Delete Account' : 'खाता हटाएं',
-        confirmText,
+        currentLang === 'en' ? 'Delete Account Access' : 'खाता एक्सेस हटाएं',
+        currentLang === 'en'
+            ? 'Remove your ' + label + ' access? History (Bahi / water) will be kept for records. You can register again later.'
+            : 'अपना ' + label + ' एक्सेस हटाएं? इतिहास (बही / पानी) रिकॉर्ड के लिए रहेगा। बाद में फिर पंजीकरण कर सकते हैं।',
         currentLang === 'en' ? 'Delete' : 'हटाएं',
         currentLang === 'en' ? 'Cancel' : 'रद्द करें',
-        () => { proceedDeleteProfile(); },
+        function () { proceedSoftDelete(onlyRole); },
         null
     );
-    return;
 };
 
-async function proceedDeleteProfile() {
-    // continued below — original body continues after this injection point
+/** Custom chooser: Customer | Owner | Both | Cancel */
+function showDeleteRoleChooser(onChoice) {
+    let overlay = document.getElementById('delete-role-chooser');
+    if (overlay) overlay.remove();
 
+    overlay = document.createElement('div');
+    overlay.id = 'delete-role-chooser';
+    overlay.className = 'modal-overlay active';
+    overlay.style.display = 'flex';
+    overlay.style.alignItems = 'center';
+    overlay.style.justifyContent = 'center';
 
+    const tTitle = currentLang === 'en' ? 'Delete Account Access' : 'खाता एक्सेस हटाएं';
+    const tMsg = currentLang === 'en'
+        ? 'You have both Owner and Customer profiles. What should we remove? History (Bahi / water) is kept.'
+        : 'आपके पास मालिक और ग्राहक दोनों प्रोफ़ाइल हैं। क्या हटाना है? इतिहास (बही / पानी) सुरक्षित रहेगा।';
+    const tCust = currentLang === 'en' ? 'Customer only' : 'केवल ग्राहक';
+    const tOwn = currentLang === 'en' ? 'Owner only' : 'केवल मालिक';
+    const tBoth = currentLang === 'en' ? 'Both' : 'दोनों';
+    const tCancel = currentLang === 'en' ? 'Cancel' : 'रद्द करें';
+
+    overlay.innerHTML =
+        '<div class="modal-content" style="max-width:360px;margin:auto;border-radius:16px;transform:none;">' +
+        '<div class="modal-header"><h3>' + tTitle + '</h3></div>' +
+        '<div class="modal-body">' +
+        '<p style="font-size:15px;color:var(--text-secondary);margin-bottom:16px;line-height:1.45;">' + tMsg + '</p>' +
+        '<button class="btn-primary" id="del-choice-customer" style="width:100%;margin-bottom:8px;">' + tCust + '</button>' +
+        '<button class="btn-primary" id="del-choice-owner" style="width:100%;margin-bottom:8px;background:var(--ios-orange,#ff9500);">' + tOwn + '</button>' +
+        '<button class="btn-primary" id="del-choice-both" style="width:100%;margin-bottom:8px;background:var(--ios-red);">' + tBoth + '</button>' +
+        '<button class="btn-ghost" id="del-choice-cancel" style="width:100%;">' + tCancel + '</button>' +
+        '</div></div>';
+
+    document.body.appendChild(overlay);
+
+    const close = function () { overlay.remove(); };
+    document.getElementById('del-choice-customer').onclick = function () { close(); onChoice('customer'); };
+    document.getElementById('del-choice-owner').onclick = function () { close(); onChoice('owner'); };
+    document.getElementById('del-choice-both').onclick = function () { close(); onChoice('both'); };
+    document.getElementById('del-choice-cancel').onclick = function () { close(); };
+}
+
+/**
+ * Soft-delete: revoke access only.
+ * choice: 'customer' | 'owner' | 'both'
+ * Does NOT delete water_usage, payments, or Bahi history.
+ */
+async function proceedSoftDelete(choice) {
     const uid = localStorage.getItem('user_uid');
-    const phone = localStorage.getItem('user_phone');
-    const role = localStorage.getItem('user_role');
+    const currentRole = localStorage.getItem('user_role') || userRole;
 
     if (!uid) {
         logout();
         return;
     }
 
-    showToast(currentLang === 'en' ? "Deleting account..." : "खाता हटाया जा रहा है...", "info");
+    showToast(currentLang === 'en' ? 'Updating account...' : 'खाता अपडेट हो रहा है...', 'info');
 
     try {
-        // Delete user document
-        await safeDeleteDoc(doc(db, 'users', uid));
-
-        // Delete tubewell data if owner
-        if (role === 'owner') {
-            await safeDeleteDoc(doc(db, 'tubewells', uid + '_primary'));
-
-            // Delete all customers linked to this owner
-            const custRef = collection(db, 'customers');
-            const custQuery = query(custRef, where('ownerId', '==', uid));
-            const custSnap = await getDocs(custQuery);
-            custSnap.forEach(async (d) => {
-                await safeDeleteDoc(doc(db, 'customers', d.id));
-            });
-
-            // Delete all customer_links
-            const linksRef = collection(db, 'customer_links');
-            const linksQuery = query(linksRef, where('ownerUid', '==', uid));
-            const linksSnap = await getDocs(linksQuery);
-            linksSnap.forEach(async (d) => {
-                await safeDeleteDoc(doc(db, 'customer_links', d.id));
-            });
-
-            // Delete queue entries
-            const queueRef = collection(db, 'queues');
-            const queueQuery = query(queueRef, where('ownerId', '==', uid));
-            const queueSnap = await getDocs(queueQuery);
-            queueSnap.forEach(async (d) => {
-                await safeDeleteDoc(doc(db, 'queues', d.id));
-            });
-
-            // Delete water usage records
-            const usageRef = collection(db, 'water_usage');
-            const usageQuery = query(usageRef, where('business_id', '==', uid));
-            const usageSnap = await getDocs(usageQuery);
-            usageSnap.forEach(async (d) => {
-                await safeDeleteDoc(doc(db, 'water_usage', d.id));
-            });
-
-            // Delete link requests
-            const reqRef = collection(db, 'link_requests');
-            const reqQuery = query(reqRef, where('ownerUid', '==', uid));
-            const reqSnap = await getDocs(reqQuery);
-            reqSnap.forEach(async (d) => {
-                await safeDeleteDoc(doc(db, 'link_requests', d.id));
-            });
+        const userRef = doc(db, 'users', uid);
+        const snap = await getDoc(userRef);
+        if (!snap.exists()) {
+            logout();
+            return;
         }
 
-        // If customer, delete their links and requests
-        if (role === 'customer') {
-            const linksRef = collection(db, 'customer_links');
-            const linksQuery = query(linksRef, where('customerUid', '==', uid));
-            const linksSnap = await getDocs(linksQuery);
-            linksSnap.forEach(async (d) => {
-                await safeDeleteDoc(doc(db, 'customer_links', d.id));
-            });
+        const d = snap.data();
+        let roles = Array.isArray(d.roles)
+            ? d.roles.slice()
+            : (d.role ? [d.role] : []);
 
-            const reqRef = collection(db, 'link_requests');
-            const reqQuery = query(reqRef, where('customerUid', '==', uid));
-            const reqSnap = await getDocs(reqQuery);
-            reqSnap.forEach(async (d) => {
-                await safeDeleteDoc(doc(db, 'link_requests', d.id));
-            });
+        if (choice === 'customer') {
+            roles = roles.filter(function (r) { return r !== 'customer'; });
+        } else if (choice === 'owner') {
+            roles = roles.filter(function (r) { return r !== 'owner'; });
+        } else {
+            // both
+            roles = [];
         }
 
-        showToast(currentLang === 'en' ? "Account deleted successfully" : "खाता सफलतापूर्वक हटा दिया गया", "success");
+        const update = {
+            roles: roles,
+            role: roles[0] || '',
+            updatedAt: safeServerTimestamp()
+        };
+
+        if (roles.length === 0) {
+            update.accountStatus = 'deleted';
+            update.deletedAt = safeServerTimestamp();
+        } else {
+            update.accountStatus = 'active';
+        }
+
+        await safeUpdateDoc(userRef, update);
+        localStorage.setItem('user_roles', JSON.stringify(roles));
+
+        // Optional: deactivate links for removed customer role (access only — keep water_usage)
+        if (choice === 'customer' || choice === 'both') {
+            try {
+                const linksRef = collection(db, 'customer_links');
+                const lq = query(linksRef, where('customerUid', '==', uid));
+                const ls = await getDocs(lq);
+                for (const docSnap of ls.docs) {
+                    await safeUpdateDoc(doc(db, 'customer_links', docSnap.id), {
+                        status: 'inactive',
+                        unlinkedAt: safeServerTimestamp()
+                    });
+                }
+                const reqRef = collection(db, 'link_requests');
+                const rq = query(reqRef, where('customerUid', '==', uid), where('status', '==', 'pending'));
+                const rs = await getDocs(rq);
+                for (const docSnap of rs.docs) {
+                    await safeUpdateDoc(doc(db, 'link_requests', docSnap.id), { status: 'cancelled' });
+                }
+            } catch (e) {
+                console.error('Link cleanup', e);
+            }
+            localStorage.removeItem('customer_link');
+            localStorage.removeItem('pending_request_owner');
+        }
+
+        // Optional: stop active queue for owner role (do not delete water_usage)
+        if (choice === 'owner' || choice === 'both') {
+            try {
+                const queueRef = collection(db, 'queues');
+                const qq = query(queueRef, where('ownerId', '==', uid));
+                const qs = await getDocs(qq);
+                for (const docSnap of qs.docs) {
+                    await safeDeleteDoc(doc(db, 'queues', docSnap.id));
+                }
+                // Mark tubewell stopped — do NOT delete tubewell doc or water_usage
+                const twRef = doc(db, 'tubewells', uid + '_primary');
+                const twSnap = await getDoc(twRef);
+                if (twSnap.exists()) {
+                    await safeUpdateDoc(twRef, {
+                        status: 'stopped',
+                        currentCustomer: null,
+                        currentStartTime: null,
+                        ownerActive: false
+                    });
+                }
+            } catch (e) {
+                console.error('Owner cleanup', e);
+            }
+        }
+
+        showToast(
+            currentLang === 'en' ? 'Access removed. Records kept.' : 'एक्सेस हटा दिया गया। रिकॉर्ड सुरक्षित हैं।',
+            'success'
+        );
+
+        // If they deleted the role they are using now, or both → logout
+        if (choice === 'both' || choice === currentRole || roles.length === 0) {
+            setTimeout(function () { logout(); }, 600);
+        } else {
+            // Still have the other role — switch UI if needed
+            localStorage.setItem('user_role', roles[0]);
+            if (roles[0] === 'owner') {
+                loadOwnerData();
+                setupOwnerUI();
+            } else {
+                setupCustomerUI();
+            }
+            if (typeof closeModal === 'function') closeModal('profile-modal');
+        }
     } catch (e) {
-        console.error('Delete failed:', e);
-        showToast(currentLang === 'en' ? "Some data could not be deleted" : "कुछ डेटा हटाया नहीं जा सका", "error");
+        console.error('Soft delete failed:', e);
+        showToast(currentLang === 'en' ? 'Could not update account' : 'खाता अपडेट नहीं हो सका', 'error');
     }
-
-    // Always clear local and logout
-    logout();
-};
+}
 
 /* --- MODALS --- */
 
@@ -2668,7 +2824,9 @@ window.openCustomerDetail = function (id) {
         } else {
             totalPaid += entry.amount || 0;
             if (idx === 0) lastEntry = entry.date;
-            return '<div class="list-item"><div class="item-info"><h4>Payment</h4><p>' + entry.date + ' • ' + (entry.note || 'Cash') + '</p></div><div class="item-value text-green">-₹' + entry.amount + '</div></div>';
+            const modeLabel = entry.mode || 'Cash';
+            const notePart = entry.note ? ' · ' + entry.note : '';
+            return '<div class="list-item"><div class="item-info"><h4>Payment · ' + modeLabel + '</h4><p>' + entry.date + notePart + '</p></div><div class="item-value text-green">-₹' + entry.amount + '</div></div>';
         }
     }).join('');
 
@@ -2689,16 +2847,18 @@ window.showView = function (viewId) {
 window.savePayment = async function () {
     const amount = parseFloat(document.getElementById('payment-amount').value);
     const date = document.getElementById('payment-date').value;
+    const mode = (document.getElementById('payment-mode') || {}).value || 'Cash';
     const note = document.getElementById('payment-note').value.trim();
+
     if (!amount || !date) {
         showToast(currentLang === 'en' ? "Enter amount and date" : "राशि और तारीख दर्ज करें", "error");
         return;
     }
     if (!window.currentCustomerId) return;
+
     const cust = getCustomerById(window.currentCustomerId) || customerData[window.currentCustomerId] || {};
     const ownerUid = localStorage.getItem('user_uid');
 
-    // Persist to Firestore so customer sees it too
     try {
         await safeAddDoc(collection(db, 'water_usage'), {
             business_id: ownerUid,
@@ -2707,7 +2867,8 @@ window.savePayment = async function () {
             customer_phone: cust.phone || '',
             customer_name: cust.name || '',
             amount,
-            note: note || 'Cash',
+            mode: mode,
+            note: note,
             status: 'paid',
             type: 'payment',
             date,
@@ -2715,36 +2876,25 @@ window.savePayment = async function () {
             owner_name: (JSON.parse(localStorage.getItem('user_info') || '{}').name || ''),
             owner_phone: localStorage.getItem('user_phone') || '',
         });
-    } catch (e) { console.error('Payment save FS failed', e); }
-
-    if (!customerData[window.currentCustomerId]) customerData[window.currentCustomerId] = { name: cust.name || '', phone: cust.phone || '', history: [] };
-    customerData[window.currentCustomerId].history.push({ type: 'payment', date, amount, note: note || 'Cash' });
-
-    const custHistory = JSON.parse(localStorage.getItem('customer_history') || '{}');
-    if (!custHistory[window.currentCustomerId]) custHistory[window.currentCustomerId] = [];
-    custHistory[window.currentCustomerId].push({ type: 'payment', date, amount, note: note || 'Cash' });
-    localStorage.setItem('customer_history', JSON.stringify(custHistory));
-
-    // Mark matching pending water entries as paid locally (FIFO by amount is complex — mark all pending of this customer as partial via history only)
-    const history = getWaterHistory();
-    let remaining = amount;
-    for (let i = 0; i < history.length && remaining > 0; i++) {
-        const h = history[i];
-        if (h.customerId === window.currentCustomerId && h.type === 'water' && h.status === 'pending') {
-            h.status = 'paid';
-            remaining -= (h.amount || 0);
-        }
+    } catch (e) {
+        console.error('Payment save FS failed', e);
+        showToast(currentLang === 'en' ? "Save failed" : "सेव नहीं हुआ", "error");
+        return;
     }
-    saveWaterHistory(history);
+
+    await syncOwnerUsageFromServer();
 
     document.getElementById('payment-amount').value = '';
     document.getElementById('payment-note').value = '';
+    const modeEl = document.getElementById('payment-mode');
+    if (modeEl) modeEl.value = 'Cash';
     closeModal('payment-modal');
     openCustomerDetail(window.currentCustomerId);
     updateDashboardStats();
     renderPendingPayments();
     showToast(currentLang === 'en' ? "Payment Saved!" : "भुगतान सेव हो गया!", "success");
-}
+};
+
 // Set default payment date
 document.getElementById('payment-date').value = new Date().toISOString().split('T')[0];
 window.toggleCustomSelect = function () {
@@ -3086,17 +3236,39 @@ window.becomeOwner = function () {
 };
 
 
-window.updateBecomeOwnerButton = function () {
+window.updateBecomeOwnerButton = async function () {
     const section = document.getElementById('become-owner-section');
     if (!section) return;
 
-    const roles = JSON.parse(localStorage.getItem('user_roles') || '[]');
     const role = localStorage.getItem('user_role') || '';
     const isCustomer = role === 'customer';
-    const alreadyOwner = roles.includes('owner') || role === 'owner';
 
-    // Only customers who are NOT already owners
-    section.style.display = (isCustomer && !alreadyOwner) ? 'block' : 'none';
+    if (!isCustomer) {
+        section.style.display = 'none';
+        return;
+    }
+
+    let roles = JSON.parse(localStorage.getItem('user_roles') || '[]');
+
+    // Prefer server roles (fixes first login after adding second role)
+    try {
+        const uid = localStorage.getItem('user_uid');
+        if (uid) {
+            const snap = await getDoc(doc(db, 'users', uid));
+            if (snap.exists()) {
+                const d = snap.data();
+                roles = Array.isArray(d.roles)
+                    ? d.roles
+                    : (d.role ? [d.role] : roles);
+                localStorage.setItem('user_roles', JSON.stringify(roles));
+            }
+        }
+    } catch (e) {
+        console.error('updateBecomeOwnerButton roles fetch', e);
+    }
+
+    const alreadyOwner = roles.includes('owner');
+    section.style.display = alreadyOwner ? 'none' : 'block';
 };
 
 

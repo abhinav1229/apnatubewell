@@ -67,6 +67,7 @@ window.logout = function () {
     localStorage.removeItem('tubewell_extras');
     localStorage.removeItem('water_history');
     localStorage.removeItem('customer_history');
+    localStorage.removeItem('user_roles');
 
     auth.signOut();
     location.reload();
@@ -985,10 +986,14 @@ window.unlinkTubewellByOwner = async function (ownerUid) {
 
 window.sendLinkRequest = async function () {
     const phone = document.getElementById('link-owner-phone').value.trim();
-    if (phone.length !== 10) { showToast(currentLang === 'en' ? 'Enter valid 10-digit phone' : 'सही 10 अंकों का फोन दर्ज करें', 'error'); return; }
+    if (phone.length !== 10) {
+        showToast(currentLang === 'en' ? 'Enter valid 10-digit phone' : 'सही 10 अंकों का फोन दर्ज करें', 'error');
+        return;
+    }
 
+    // Query by phone only (do not filter role == owner)
     const usersRef = collection(db, 'users');
-    const q = query(usersRef, where('phone', '==', phone), where('role', '==', 'owner'));
+    const q = query(usersRef, where('phone', '==', phone));
     const snapshot = await getDocs(q);
 
     if (snapshot.empty) {
@@ -996,13 +1001,45 @@ window.sendLinkRequest = async function () {
         return;
     }
 
-    const ownerData = snapshot.docs[0].data();
-    const ownerUid = snapshot.docs[0].id;
+    // Pick a user who is (or can be) an owner: roles includes 'owner' OR role === 'owner'
+    let ownerDoc = null;
+    for (const d of snapshot.docs) {
+        const data = d.data();
+        const roles = Array.isArray(data.roles)
+            ? data.roles
+            : (data.role ? [data.role] : []);
+        if (roles.includes('owner') || data.role === 'owner') {
+            ownerDoc = d;
+            break;
+        }
+    }
+
+    if (!ownerDoc) {
+        showToast(
+            currentLang === 'en'
+                ? 'This number is not registered as an Owner'
+                : 'यह नंबर मालिक के रूप में पंजीकृत नहीं है',
+            'error'
+        );
+        return;
+    }
+
+    const ownerData = ownerDoc.data();
+    const ownerUid = ownerDoc.id;
     const customerUid = localStorage.getItem('user_uid');
     const customerPhone = localStorage.getItem('user_phone');
     const userInfo = JSON.parse(localStorage.getItem('user_info') || '{}');
 
-    // Check if already linked via customer_links
+    // Do not allow linking to yourself
+    if (ownerUid === customerUid) {
+        showToast(
+            currentLang === 'en' ? 'You cannot link to your own number' : 'आप अपने नंबर से लिंक नहीं कर सकते',
+            'error'
+        );
+        return;
+    }
+
+    // Check if already linked
     const linksRefCheck = collection(db, 'customer_links');
     const linkQ = query(linksRefCheck, where('customerUid', '==', customerUid), where('ownerUid', '==', ownerUid));
     const linkSnap = await getDocs(linkQ);
@@ -1017,8 +1054,14 @@ window.sendLinkRequest = async function () {
     const exSnap = await getDocs(existing);
     if (!exSnap.empty) {
         const status = exSnap.docs[0].data().status;
-        if (status === 'pending') { showToast(currentLang === 'en' ? 'Already requested' : 'अनुरोध पहले से भेजा गया है', 'info'); return; }
-        if (status === 'accepted') { showToast(currentLang === 'en' ? 'Already linked' : 'पहले से जुड़ा हुआ है', 'info'); return; }
+        if (status === 'pending') {
+            showToast(currentLang === 'en' ? 'Already requested' : 'अनुरोध पहले से भेजा गया है', 'info');
+            return;
+        }
+        if (status === 'accepted') {
+            showToast(currentLang === 'en' ? 'Already linked' : 'पहले से जुड़ा हुआ है', 'info');
+            return;
+        }
     }
 
     // Create request
@@ -1032,7 +1075,7 @@ window.sendLinkRequest = async function () {
         createdAt: safeServerTimestamp()
     });
 
-    // Create notification for owner
+    // Notification for owner
     await safeAddDoc(collection(db, 'notifications'), {
         toUid: ownerUid,
         type: 'link_request',
@@ -1048,7 +1091,10 @@ window.sendLinkRequest = async function () {
     if (phoneEl) phoneEl.value = '';
     renderCustomerLinkedTubewell();
     renderMyTubewell();
-    showToast(currentLang === 'en' ? 'Request sent! Check My Tubewell section.' : 'अनुरोध भेज दिया गया! मेरा ट्यूबवेल सेक्शन देखें।', 'success');
+    showToast(
+        currentLang === 'en' ? 'Request sent! Check My Tubewell section.' : 'अनुरोध भेज दिया गया! मेरा ट्यूबवेल सेक्शन देखें।',
+        'success'
+    );
 };
 
 
@@ -1953,7 +1999,6 @@ document.getElementById('send-otp-btn').addEventListener('click', async () => {
         document.getElementById('login-screen').style.display = 'none';
         document.getElementById('login-screen').classList.remove('active');
         document.getElementById('basic-info-screen').classList.add('active');
-        // Show owner extra fields if owner
         const extra = document.getElementById('owner-extra-fields');
         if (extra) extra.style.display = userRole === 'owner' ? 'block' : 'none';
         return;
@@ -1965,51 +2010,98 @@ document.getElementById('send-otp-btn').addEventListener('click', async () => {
         if (userDoc.exists()) {
             const existingUser = userDoc.data();
 
-            // Verify DOB if stored
+            // Verify DOB
             if (existingUser.dob && existingUser.dob !== dobInput) {
                 showToast(currentLang === 'en' ? "Wrong Date of Birth. Please check details." : "गलत जन्म तिथि। कृपया विवरण जांचें।", "error");
                 return;
             }
 
-            // Role mismatch warning but allow
-            if (existingUser.role && existingUser.role !== userRole) {
-                userRole = existingUser.role;
+            // Roles this account already has
+            const existingRoles = Array.isArray(existingUser.roles)
+                ? existingUser.roles
+                : (existingUser.role ? [existingUser.role] : []);
+
+            // CASE A: Requested role already exists → normal login
+            if (existingRoles.includes(userRole)) {
+                localStorage.setItem('is_logged_in', 'true');
                 localStorage.setItem('user_role', userRole);
-            }
-
-            localStorage.setItem('is_logged_in', 'true');
-            localStorage.setItem('user_info', JSON.stringify({
-                name: existingUser.name || '',
-                village: existingUser.village || '',
-                phone: phoneInput,
-                email: existingUser.email || '',
-                dob: existingUser.dob || dobInput
-            }));
-
-            if (userRole === 'owner' || existingUser.role === 'owner') {
-                localStorage.setItem('owner_info', JSON.stringify({
+                localStorage.setItem('user_info', JSON.stringify({
                     name: existingUser.name || '',
                     village: existingUser.village || '',
                     phone: phoneInput,
-                    email: existingUser.email || ''
+                    email: existingUser.email || '',
+                    dob: existingUser.dob || dobInput
                 }));
-                const twDoc = await getDoc(doc(db, 'tubewells', uid + '_primary'));
-                if (twDoc.exists()) {
-                    localStorage.setItem('tubewell_data', JSON.stringify(twDoc.data()));
+
+                if (userRole === 'owner' || existingRoles.includes('owner')) {
+                    localStorage.setItem('owner_info', JSON.stringify({
+                        name: existingUser.name || '',
+                        village: existingUser.village || '',
+                        phone: phoneInput,
+                        email: existingUser.email || ''
+                    }));
+                    const twDoc = await getDoc(doc(db, 'tubewells', uid + '_primary'));
+                    if (twDoc.exists()) {
+                        localStorage.setItem('tubewell_data', JSON.stringify(twDoc.data()));
+                    }
                 }
+
+                localStorage.setItem('user_roles', JSON.stringify(existingRoles));
+
+                document.getElementById('login-screen').style.display = 'none';
+                document.getElementById('login-screen').classList.remove('active');
+                document.getElementById('app-shell').style.display = 'block';
+
+                if (userRole === 'customer') {
+                    setupCustomerUI();
+                } else {
+                    loadOwnerData();
+                    setupOwnerUI();
+                }
+                showToast(currentLang === 'en' ? "Welcome back!" : "वापसी का स्वागत है!", "success");
+                return;
             }
 
-            document.getElementById('login-screen').style.display = 'none';
-            document.getElementById('login-screen').classList.remove('active');
-            document.getElementById('app-shell').style.display = 'block';
+            // CASE B: Account exists with other role only → ask to add this role
+            const otherRoleLabel = existingRoles.includes('owner')
+                ? (currentLang === 'en' ? 'Owner' : 'मालिक')
+                : (currentLang === 'en' ? 'Customer' : 'ग्राहक');
+            const wantLabel = userRole === 'customer'
+                ? (currentLang === 'en' ? 'Customer' : 'ग्राहक')
+                : (currentLang === 'en' ? 'Owner' : 'मालिक');
 
-            if (userRole === 'customer') {
-                setupCustomerUI();
-            } else {
-                loadOwnerData();
-                setupOwnerUI();
-            }
-            showToast(currentLang === 'en' ? "Welcome back!" : "वापसी का स्वागत है!", "success");
+            showConfirmPopup(
+                currentLang === 'en' ? 'Account already exists' : 'खाता पहले से मौजूद है',
+                currentLang === 'en'
+                    ? 'You already have an ' + otherRoleLabel + ' account. Do you want to also create a ' + wantLabel + ' profile with the same details?'
+                    : 'आपके पास पहले से ' + otherRoleLabel + ' खाता है। क्या आप उन्हीं विवरणों से ' + wantLabel + ' प्रोफ़ाइल भी बनाना चाहते हैं?',
+                currentLang === 'en' ? 'Yes, create' : 'हाँ, बनाएं',
+                currentLang === 'en' ? 'Cancel' : 'रद्द करें',
+                () => {
+                    isRegisterMode = true;
+                    localStorage.setItem('user_role', userRole);
+
+                    document.getElementById('owner-name').value = existingUser.name || '';
+                    document.getElementById('owner-village').value = existingUser.village || '';
+
+                    const extra = document.getElementById('owner-extra-fields');
+                    if (extra) extra.style.display = userRole === 'owner' ? 'block' : 'none';
+
+                    document.getElementById('login-screen').style.display = 'none';
+                    document.getElementById('login-screen').classList.remove('active');
+                    document.getElementById('basic-info-screen').classList.add('active');
+
+                    showToast(
+                        currentLang === 'en'
+                            ? 'Name & village filled. Confirm and save.'
+                            : 'नाम और गाँव भर दिए गए। पुष्टि करके सेव करें।',
+                        'info'
+                    );
+                },
+                () => {
+                    showToast(currentLang === 'en' ? 'Login cancelled' : 'लॉगिन रद्द', 'info');
+                }
+            );
             return;
         }
     } catch (e) {
@@ -2025,7 +2117,6 @@ document.getElementById('send-otp-btn').addEventListener('click', async () => {
         currentLang === 'en' ? 'Create new' : 'नया बनाएं',
         currentLang === 'en' ? 'Correct Details' : 'विवरण सही करें',
         () => {
-            // Create new
             isRegisterMode = true;
             const btn = document.getElementById('send-otp-btn');
             if (btn) btn.innerText = currentLang === 'en' ? 'Register' : 'पंजीकरण करें';
@@ -2034,7 +2125,6 @@ document.getElementById('send-otp-btn').addEventListener('click', async () => {
             showToast(currentLang === 'en' ? 'Confirm details and tap Register' : 'विवरण की पुष्टि करें और पंजीकरण पर टैप करें', 'info');
         },
         () => {
-            // Correct details — just close, keep form
             showToast(currentLang === 'en' ? 'Please correct your details' : 'कृपया अपना विवरण सही करें', 'info');
         }
     );
@@ -2064,11 +2154,44 @@ document.getElementById('save-basic-info-btn').addEventListener('click', async (
         }
     }
 
-    const userData = { name, village, phone, role: userRole, dob, email: '', createdAt: safeServerTimestamp() };
+    // Merge roles so same phone can be both owner and customer
+    const userRef = doc(db, 'users', uid);
+    const existingSnap = await getDoc(userRef);
+    let roles = [userRole];
+    let existingEmail = '';
 
-    await safeSetDoc(doc(db, 'users', uid), userData);
+    localStorage.setItem('user_roles', JSON.stringify(roles));
+
+    if (existingSnap.exists()) {
+        const d = existingSnap.data();
+        const prev = Array.isArray(d.roles) ? d.roles : (d.role ? [d.role] : []);
+        roles = Array.from(new Set(prev.concat([userRole])));
+        existingEmail = d.email || '';
+    }
+
+    const userData = {
+        name,
+        village,
+        phone,
+        dob,
+        email: existingEmail,
+        role: userRole,
+        roles: roles,
+        updatedAt: safeServerTimestamp()
+    };
+    if (!existingSnap.exists()) {
+        userData.createdAt = safeServerTimestamp();
+    }
+
+    if (existingSnap.exists()) {
+        await safeUpdateDoc(userRef, userData);
+    } else {
+        await safeSetDoc(userRef, userData);
+    }
+
     localStorage.setItem('is_logged_in', 'true');
-    localStorage.setItem('user_info', JSON.stringify({ name, village, phone, email: '', dob }));
+    localStorage.setItem('user_role', userRole);
+    localStorage.setItem('user_info', JSON.stringify({ name, village, phone, email: existingEmail, dob }));
 
     document.getElementById('basic-info-screen').classList.remove('active');
     document.getElementById('app-shell').style.display = 'block';
@@ -2082,7 +2205,7 @@ document.getElementById('save-basic-info-btn').addEventListener('click', async (
     if (userRole === 'customer') {
         setupCustomerUI();
     } else {
-        localStorage.setItem('owner_info', JSON.stringify({ name, village, phone, email: '' }));
+        localStorage.setItem('owner_info', JSON.stringify({ name, village, phone, email: existingEmail }));
         const defaultTw = {
             name: twName,
             location: village,
@@ -2092,8 +2215,15 @@ document.getElementById('save-basic-info-btn').addEventListener('click', async (
             currentStartTime: null,
             ownerId: uid
         };
-        await safeSetDoc(doc(db, 'tubewells', uid + '_primary'), defaultTw);
-        localStorage.setItem('tubewell_data', JSON.stringify(defaultTw));
+        // Only create tubewell if it does not already exist
+        const twRef = doc(db, 'tubewells', uid + '_primary');
+        const twSnap = await getDoc(twRef);
+        if (!twSnap.exists()) {
+            await safeSetDoc(twRef, defaultTw);
+            localStorage.setItem('tubewell_data', JSON.stringify(defaultTw));
+        } else {
+            localStorage.setItem('tubewell_data', JSON.stringify(twSnap.data()));
+        }
         setupOwnerUI();
     }
     isRegisterMode = false;
@@ -2332,7 +2462,12 @@ window.openModal = function (id) {
             rateEl.value = tw.rate || 150;
         }
     }
-}
+    if (id === 'profile-modal') {
+        updateBecomeOwnerButton();
+    }
+};
+
+
 window.closeModal = function (id) {
     document.getElementById(id).classList.remove('active');
 }
@@ -2854,7 +2989,7 @@ function setupCustomerUI() {
         prb.style.background = 'rgba(52,199,89,0.1)';
         prb.style.color = 'var(--ios-green)';
     }
-    // Fill customer profile page
+    // Fill customer profile page + greeting
     const info = JSON.parse(localStorage.getItem('user_info') || '{}');
     const setTxt = (id, val) => { const el = document.getElementById(id); if (el) el.innerText = val || '—'; };
     setTxt('cust-profile-name', info.name);
@@ -2864,6 +2999,11 @@ function setupCustomerUI() {
     setTxt('profile-name-display', info.name);
     setTxt('profile-business-display', info.village);
     setTxt('profile-email-display', info.email);
+
+    const greetingEl = document.querySelector('.greeting');
+    if (greetingEl) {
+        greetingEl.innerText = (currentLang === 'en' ? 'Namaste, ' : 'नमस्ते, ') + (info.name || '');
+    }
 
     renderCustomerLinkedTubewell().then(() => {
         renderCustomerQueuePosition();
@@ -2898,29 +3038,66 @@ function setupCustomerUI() {
         });
     }
     startCustomerListeners();
+    updateBecomeOwnerButton();
 }
 
 
 window.becomeOwner = function () {
     showConfirmPopup(
         currentLang === 'en' ? 'Become Owner' : 'मालिक बनें',
-        currentLang === 'en' ? "Switch to owner mode? Your customer data will be preserved." : "मालिक मोड में स्विच करें? आपका ग्राहक डेटा सुरक्षित रहेगा।",
+        currentLang === 'en'
+            ? "Switch to owner mode? Your customer data will be preserved."
+            : "मालिक मोड में स्विच करें? आपका ग्राहक डेटा सुरक्षित रहेगा।",
         currentLang === 'en' ? 'Continue' : 'जारी रखें',
         currentLang === 'en' ? 'Cancel' : 'रद्द करें',
         () => {
+            // Close profile modal first
+            if (typeof closeModal === 'function') {
+                closeModal('profile-modal');
+            } else {
+                const pm = document.getElementById('profile-modal');
+                if (pm) pm.classList.remove('active');
+            }
+
             userRole = 'owner';
             localStorage.setItem('user_role', 'owner');
             document.getElementById('app-shell').style.display = 'none';
             document.querySelectorAll('.main-view').forEach(v => v.classList.remove('active'));
             document.querySelectorAll('.customer-only').forEach(v => v.style.display = 'none');
+
+            // Pre-fill name/village from existing customer profile
+            const info = JSON.parse(localStorage.getItem('user_info') || '{}');
+            const nameEl = document.getElementById('owner-name');
+            const villageEl = document.getElementById('owner-village');
+            if (nameEl) nameEl.value = info.name || '';
+            if (villageEl) villageEl.value = info.village || '';
+
             const extra = document.getElementById('owner-extra-fields');
             if (extra) extra.style.display = 'block';
+
             document.getElementById('basic-info-screen').classList.add('active');
-            showToast(currentLang === 'en' ? "Complete your owner profile" : "अपना मालिक प्रोफाइल पूरा करें", "info");
+            showToast(
+                currentLang === 'en' ? "Complete your owner profile" : "अपना मालिक प्रोफाइल पूरा करें",
+                "info"
+            );
         },
         null
     );
-}
+};
+
+
+window.updateBecomeOwnerButton = function () {
+    const section = document.getElementById('become-owner-section');
+    if (!section) return;
+
+    const roles = JSON.parse(localStorage.getItem('user_roles') || '[]');
+    const role = localStorage.getItem('user_role') || '';
+    const isCustomer = role === 'customer';
+    const alreadyOwner = roles.includes('owner') || role === 'owner';
+
+    // Only customers who are NOT already owners
+    section.style.display = (isCustomer && !alreadyOwner) ? 'block' : 'none';
+};
 
 
 /* --- INIT & AUTO LOGIN --- */

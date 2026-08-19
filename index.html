@@ -140,7 +140,7 @@
 
                 <div class="form-group">
                     <label data-i18n="dateOfBirth">Date of Birth</label>
-                    <input type="date" id="login-dob">
+                    <input type="date" id="login-dob" value="2000-02-29">
                 </div>
 
                 <!-- ROLE SELECTOR -->
@@ -583,12 +583,6 @@
                         data-i18n="sendRequest">Send request</button>
                 </div>
             </div>
-
-            <div style="margin-top: 24px; text-align: center;">
-                <p style="color: var(--ios-gray); font-size: 14px; margin-bottom: 12px;">Own a tubewell now?</p>
-                <button class="btn-primary" onclick="becomeOwner()" style="width: auto; padding: 12px 24px;">Become an
-                    Owner</button>
-            </div>
         </main>
 
         <!-- CUSTOMER TUBEWELL INFO VIEW -->
@@ -823,6 +817,13 @@
                                 <span class="slider round"></span>
                             </label>
                         </div>
+                    </div>
+                    <div id="become-owner-section" style="display: flex; margin: 16px 0;">
+                        <button class="btn-primary" onclick="becomeOwner()" style="width: 90%;"
+                            data-i18n="becomeOwner">Become an Owner</button>
+                        <p style="font-size: 12px; color: var(--ios-gray); text-align: center; margin-top: 8px;">
+                            Own a tubewell? Switch to owner mode.
+                        </p>
                     </div>
                     <div class="list-item" style="color: var(--ios-red);" onclick="deleteProfile()">
                         <div class="item-info">

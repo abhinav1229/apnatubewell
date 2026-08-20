@@ -68,6 +68,7 @@ window.logout = function () {
     localStorage.removeItem('water_history');
     localStorage.removeItem('customer_history');
     localStorage.removeItem('user_roles');
+    localStorage.removeItem('bahi_contacts');
 
     auth.signOut();
     location.reload();
@@ -93,8 +94,42 @@ function saveWaterHistory(arr) { localStorage.setItem('water_history', JSON.stri
 function loadCustomerData() {
     const customers = getCustomers();
     const history = JSON.parse(localStorage.getItem('customer_history') || '{}');
+    const bahiContacts = JSON.parse(localStorage.getItem('bahi_contacts') || '{}');
+
     customers.forEach(c => {
-        customerData[c.id] = { name: c.name, phone: c.phone, history: history[c.id] || [] };
+        customerData[c.id] = {
+            name: c.name,
+            phone: c.phone,
+            history: history[c.id] || (customerData[c.id] && customerData[c.id].history) || []
+        };
+    });
+
+    // Restored removed customers for Bahi
+    Object.keys(bahiContacts).forEach(cid => {
+        if (!customerData[cid]) {
+            customerData[cid] = {
+                name: bahiContacts[cid].name || 'Customer',
+                phone: bahiContacts[cid].phone || '',
+                history: history[cid] || []
+            };
+        } else {
+            if (!customerData[cid].name) customerData[cid].name = bahiContacts[cid].name;
+            if (!customerData[cid].phone) customerData[cid].phone = bahiContacts[cid].phone;
+            if (!customerData[cid].history || !customerData[cid].history.length) {
+                customerData[cid].history = history[cid] || [];
+            }
+        }
+    });
+
+    Object.keys(history).forEach(cid => {
+        if (!customerData[cid]) {
+            const meta = bahiContacts[cid] || {};
+            customerData[cid] = {
+                name: meta.name || 'Customer',
+                phone: meta.phone || '',
+                history: history[cid] || []
+            };
+        }
     });
 }
 
@@ -431,90 +466,236 @@ window.setMaintenanceMode = async function (active) {
 
 /* --- CUSTOMER MANAGEMENT --- */
 window.addNewCustomer = async function () {
-    const name = document.getElementById('new-customer-name').value.trim();
-    const phone = document.getElementById('new-customer-phone').value.trim();
-    const tubewellId = document.getElementById('new-customer-tubewell').value;
-    if (!name || !phone || phone.length !== 10) {
-        showToast(currentLang === 'en' ? 'Enter valid name and 10-digit phone' : 'सही नाम और 10 अंकों का फोन दर्ज करें', 'error');
+    const phoneEl = document.getElementById('new-customer-phone');
+    const phone = (phoneEl && phoneEl.value || '').trim();
+
+    if (phone.length !== 10) {
+        showToast(
+            currentLang === 'en' ? 'Enter valid 10-digit phone' : 'सही 10 अंकों का फोन दर्ज करें',
+            'error'
+        );
         return;
     }
+
     const ownerUid = localStorage.getItem('user_uid');
     const ownerPhone = localStorage.getItem('user_phone');
 
-    // Prevent duplicate customer by phone for this owner
-    const existingLocal = getCustomers().find(c => c.phone === phone);
-    if (existingLocal) {
-        showToast(currentLang === 'en' ? 'Customer already in your list' : 'ग्राहक पहले से आपकी सूची में है', 'info');
+    if (phone === ownerPhone) {
+        showToast(
+            currentLang === 'en' ? 'You cannot add your own number' : 'अपना नंबर नहीं जोड़ सकते',
+            'error'
+        );
         return;
     }
+
+    // Already in active list?
+    const customers = getCustomers();
+    if (customers.some(c => c.phone === phone)) {
+        showToast(
+            currentLang === 'en' ? 'Customer already in your list' : 'ग्राहक पहले से सूची में है',
+            'info'
+        );
+        return;
+    }
+
+    // Must be registered in app — get name from users
+    let name = '';
+    let customerUid = 'phone_' + phone;
     try {
-        const custRef = collection(db, 'customers');
-        const dupQ = query(custRef, where('ownerId', '==', ownerUid), where('phone', '==', phone));
-        const dupSnap = await getDocs(dupQ);
-        if (!dupSnap.empty) {
-            showToast(currentLang === 'en' ? 'Customer already in your list' : 'ग्राहक पहले से आपकी सूची में है', 'info');
+        const userSnap = await getDocs(query(collection(db, 'users'), where('phone', '==', phone)));
+        if (userSnap.empty) {
+            showToast(
+                currentLang === 'en'
+                    ? 'This number is not registered in the app'
+                    : 'यह नंबर ऐप में पंजीकृत नहीं है',
+                'error'
+            );
             return;
         }
-    } catch (e) { }
+        const uDoc = userSnap.docs[0];
+        const uData = uDoc.data();
 
-    // Check if customer user exists
-    const usersRef = collection(db, 'users');
-    const q = query(usersRef, where('phone', '==', phone));
-    const snapshot = await getDocs(q);
-    let customerUid = null;
-    if (!snapshot.empty) {
-        customerUid = snapshot.docs[0].id;
+        // Block if account fully deleted
+        if (uData.accountStatus === 'deleted') {
+            showToast(
+                currentLang === 'en'
+                    ? 'This account has been deleted. Cannot add to contacts.'
+                    : 'यह खाता हटा दिया गया है। संपर्क में नहीं जोड़ सकते।',
+                'error'
+            );
+            return;
+        }
+
+        // Must still have customer role (or any active role you allow)
+        const roles = Array.isArray(uData.roles)
+            ? uData.roles
+            : (uData.role ? [uData.role] : []);
+
+        const hasCustomer =
+            roles.includes('customer') ||
+            uData.role === 'customer';
+
+        // If they only deleted customer role but kept owner, still block as customer-contact
+        if (!hasCustomer) {
+            showToast(
+                currentLang === 'en'
+                    ? 'This user is not registered as a customer'
+                    : 'यह उपयोगकर्ता ग्राहक के रूप में पंजीकृत नहीं है',
+                'error'
+            );
+            return;
+        }
+
+
+        customerUid = uDoc.id;
+        name = (uData.name || '').trim();
+        if (!name) {
+            showToast(
+                currentLang === 'en' ? 'User has no name on profile' : 'प्रोफ़ाइल पर नाम नहीं है',
+                'error'
+            );
+            return;
+        }
+    } catch (e) {
+        console.error(e);
+        showToast(
+            currentLang === 'en' ? 'Could not verify number' : 'नंबर जाँच नहीं हो सका',
+            'error'
+        );
+        return;
     }
 
-    const id = 'cust_' + Date.now();
-    // Find customer's actual UID from users collection by phone
-    let actualCustomerUid = customerUid;
-    if (!actualCustomerUid && !isMockMode) {
-        try {
-            const usersRef = collection(db, 'users');
-            const uq = query(usersRef, where('phone', '==', phone));
-            const usnap = await getDocs(uq);
-            if (!usnap.empty) {
-                actualCustomerUid = usnap.docs[0].id;
+    // ---------- Find existing id (removed customer / old Bahi) ----------
+    let id = null;
+
+    // A) Firestore customers for this owner + phone (including status: removed)
+    try {
+        const cSnap = await getDocs(
+            query(
+                collection(db, 'customers'),
+                where('ownerId', '==', ownerUid),
+                where('phone', '==', phone)
+            )
+        );
+        if (!cSnap.empty) {
+            const d = cSnap.docs[0];
+            const data = d.data();
+            id = data.id || d.id;
+            if (data.name) name = data.name;
+        }
+    } catch (e) {
+        console.error('lookup customers by phone', e);
+    }
+
+    // B) Local bahi_contacts
+    if (!id) {
+        const bahiContacts = JSON.parse(localStorage.getItem('bahi_contacts') || '{}');
+        Object.keys(bahiContacts).forEach(cid => {
+            if (!id && bahiContacts[cid] && bahiContacts[cid].phone === phone) {
+                id = cid;
+                if (bahiContacts[cid].name) name = bahiContacts[cid].name;
             }
-        } catch (e) { }
-    }
-    // Fallback to phone-based UID
-    if (!actualCustomerUid) {
-        actualCustomerUid = 'phone_' + phone;
-    }
-
-    const customerData = { id, name, phone, tubewellId, ownerId: ownerUid, ownerPhone, linkedAt: safeServerTimestamp(), customerUid: actualCustomerUid };
-
-    // Save to Firestore
-    await safeSetDoc(doc(db, 'customers', id), customerData);
-
-    // Create customer_link so customer can see this owner
-    if (customerUid) {
-        await safeSetDoc(doc(db, 'customer_links', customerUid + '_' + ownerUid), {
-            customerUid: customerUid,
-            customerPhone: phone,
-            customerName: name,
-            ownerUid: ownerUid,
-            ownerPhone: ownerPhone,
-            tubewellId: tubewellId,
-            status: 'linked',
-            linkedAt: safeServerTimestamp()
         });
     }
 
-    // Also save to local
-    const customers = getCustomers();
-    customers.push(customerData);
-    saveCustomers(customers);
-    customerData[id] = { name, phone, history: [] };
+    // C) customerData by phone
+    if (!id) {
+        Object.keys(customerData).forEach(cid => {
+            if (!id && customerData[cid] && customerData[cid].phone === phone) {
+                id = cid;
+                if (customerData[cid].name) name = customerData[cid].name;
+            }
+        });
+    }
 
+    // D) water_history by phone
+    if (!id) {
+        const wh = getWaterHistory();
+        for (let i = 0; i < wh.length; i++) {
+            if (wh[i].customerPhone === phone && wh[i].customerId) {
+                id = wh[i].customerId;
+                break;
+            }
+        }
+    }
+
+    // E) New customer
+    if (!id) {
+        id = 'cust_' + Date.now();
+    }
+
+    // ---------- Save ----------
+    const newCust = {
+        id: id,
+        name: name,
+        phone: phone,
+        customerUid: customerUid,
+        ownerId: ownerUid,
+        ownerPhone: ownerPhone,
+        status: 'active',
+        linkedAt: new Date().toISOString()
+    };
+
+    customers.push(newCust);
+    saveCustomers(customers);
+
+    // Keep old ledger history if any
+    const historyMap = JSON.parse(localStorage.getItem('customer_history') || '{}');
+    const prevHistory = (customerData[id] && customerData[id].history) || historyMap[id] || [];
+    customerData[id] = { name: name, phone: phone, history: prevHistory };
+    if (prevHistory.length) {
+        historyMap[id] = prevHistory;
+        localStorage.setItem('customer_history', JSON.stringify(historyMap));
+    }
+
+    const bahiContacts = JSON.parse(localStorage.getItem('bahi_contacts') || '{}');
+    bahiContacts[id] = { id: id, name: name, phone: phone };
+    localStorage.setItem('bahi_contacts', JSON.stringify(bahiContacts));
+
+    // Firestore — same id, mark active again
+    try {
+        await safeSetDoc(doc(db, 'customers', id), {
+            id: id,
+            name: name,
+            phone: phone,
+            customerUid: customerUid,
+            ownerId: ownerUid,
+            ownerPhone: ownerPhone,
+            status: 'active',
+            linkedAt: safeServerTimestamp()
+        });
+    } catch (e) {
+        console.error('save customer FS', e);
+    }
+
+    // Link for customer app
+    try {
+        if (customerUid) {
+            await safeSetDoc(doc(db, 'customer_links', customerUid + '_' + ownerUid), {
+                customerUid: customerUid,
+                customerPhone: phone,
+                customerName: name,
+                ownerUid: ownerUid,
+                ownerPhone: ownerPhone,
+                tubewellId: 'primary',
+                status: 'linked',
+                linkedAt: safeServerTimestamp()
+            });
+        }
+    } catch (e) {
+        console.error('customer_links', e);
+    }
+
+    if (phoneEl) phoneEl.value = '';
+    closeModal('add-customer-modal');
     populateCustomerDropdowns();
     renderCustomers();
-    closeModal('add-customer-modal');
-    document.getElementById('new-customer-name').value = '';
-    document.getElementById('new-customer-phone').value = '';
-    showToast(currentLang === 'en' ? 'Customer added!' : 'ग्राहक जोड़ दिया गया!', 'success');
+    if (typeof renderBahiCustomers === 'function') renderBahiCustomers();
+
+    showToast(
+        currentLang === 'en' ? 'Customer added: ' + name : 'ग्राहक जोड़ा: ' + name,
+        'success'
+    );
 };
 
 window.renderCustomers = async function () {
@@ -522,36 +703,209 @@ window.renderCustomers = async function () {
     const list = document.getElementById('customers-list');
     if (!list) return;
 
-    // First render from local
-    const localCustomers = getCustomers();
-    if (localCustomers.length === 0) {
-        list.innerHTML = '<div class="list-item empty-state"><div class="item-info"><p data-i18n="noCustomers">' + locales[currentLang].noCustomers + '</p></div></div>';
-    } else {
-        list.innerHTML = localCustomers.map(c => `<div class="list-item" onclick="openCustomerDetail('${c.id}')"><div class="item-info"><h4>${c.name}</h4><p>${c.phone}</p></div><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--ios-gray)" stroke-width="2"><polyline points="9 18 15 12 9 6"></polyline></svg></div>`).join('');
+    function rowHtml(c) {
+        return '<div class="list-item">' +
+            '<div class="item-info" style="flex:1;cursor:pointer;" onclick="openCustomerDetail(\'' + c.id + '\')">' +
+            '<h4>' + (c.name || '') + '</h4><p>' + (c.phone || '') + '</p></div>' +
+            '<button class="btn-small" style="margin-right:8px;" onclick="removeCustomer(\'' + c.id + '\', event)">' +
+            (currentLang === 'en' ? 'Remove' : 'हटाएं') +
+            '</button>' +
+            '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--ios-gray)" stroke-width="2" onclick="openCustomerDetail(\'' + c.id + '\')"><polyline points="9 18 15 12 9 6"></polyline></svg>' +
+            '</div>';
     }
 
-    // Then sync from Firestore
-    const custRef = collection(db, 'customers');
-    const q = query(custRef, where('ownerId', '==', ownerUid));
-    const snapshot = await getDocs(q);
-    const firestoreCustomers = [];
-    snapshot.forEach(d => firestoreCustomers.push(d.data()));
-    if (firestoreCustomers.length > 0) {
-        saveCustomers(firestoreCustomers);
+    // 1) Show local active list first
+    let localCustomers = getCustomers().filter(c => c.status !== 'removed');
+    if (localCustomers.length === 0) {
+        list.innerHTML = '<div class="list-item empty-state"><div class="item-info"><p data-i18n="noCustomers">' +
+            locales[currentLang].noCustomers + '</p></div></div>';
+    } else {
+        list.innerHTML = localCustomers.map(rowHtml).join('');
+    }
+
+    // 2) Sync from Firestore — ONLY active (not removed)
+    try {
+        const snapshot = await getDocs(
+            query(collection(db, 'customers'), where('ownerId', '==', ownerUid))
+        );
+        const active = [];
+        snapshot.forEach(d => {
+            const data = d.data();
+            if (data.status === 'removed') return; // critical
+            active.push({
+                ...data,
+                id: data.id || d.id,
+                status: data.status || 'active'
+            });
+        });
+
+        // Always write local list (even if empty)
+        saveCustomers(active);
         loadCustomerData();
-        list.innerHTML = firestoreCustomers.map(c => `<div class="list-item" onclick="openCustomerDetail('${c.id}')"><div class="item-info"><h4>${c.name}</h4><p>${c.phone}</p></div><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--ios-gray)" stroke-width="2"><polyline points="9 18 15 12 9 6"></polyline></svg></div>`).join('');
+
+        if (active.length === 0) {
+            list.innerHTML = '<div class="list-item empty-state"><div class="item-info"><p data-i18n="noCustomers">' +
+                locales[currentLang].noCustomers + '</p></div></div>';
+        } else {
+            list.innerHTML = active.map(rowHtml).join('');
+        }
+    } catch (e) {
+        console.error('renderCustomers FS', e);
     }
 };
 
-window.renderBahiCustomers = function () {
-    const customers = getCustomers();
+window.removeCustomer = function (customerId, event) {
+    if (event) {
+        event.stopPropagation();
+        event.preventDefault();
+    }
+
+    const cust = getCustomerById(customerId) || (customerData[customerId] || {});
+    const name = cust.name || 'Customer';
+
+    showConfirmPopup(
+        currentLang === 'en' ? 'Remove customer' : 'ग्राहक हटाएं',
+        currentLang === 'en'
+            ? 'Remove ' + name + ' from your list? Bahi / payment history will be kept.'
+            : name + ' को सूची से हटाएं? बही / भुगतान इतिहास सुरक्षित रहेगा।',
+        currentLang === 'en' ? 'Remove' : 'हटाएं',
+        currentLang === 'en' ? 'Cancel' : 'रद्द करें',
+        function () { proceedRemoveCustomer(customerId); },
+        null
+    );
+};
+
+async function proceedRemoveCustomer(customerId) {
+    const ownerUid = localStorage.getItem('user_uid');
+    const cust = getCustomerById(customerId) || customerData[customerId] || {};
+    const phone = cust.phone || '';
+    const name = cust.name || 'Customer';
+
+    // Local Bahi meta (optional, for this session)
+    const bahiContacts = JSON.parse(localStorage.getItem('bahi_contacts') || '{}');
+    bahiContacts[customerId] = { id: customerId, name: name, phone: phone };
+    localStorage.setItem('bahi_contacts', JSON.stringify(bahiContacts));
+
+    if (!customerData[customerId]) {
+        customerData[customerId] = { name: name, phone: phone, history: [] };
+    } else {
+        customerData[customerId].name = name;
+        customerData[customerId].phone = phone;
+    }
+
+    // Active list only
+    saveCustomers(getCustomers().filter(c => c.id !== customerId && c.phone !== phone));
+
+    // DB: mark removed — do NOT delete doc
+    try {
+        await safeUpdateDoc(doc(db, 'customers', customerId), {
+            status: 'removed',
+            removedAt: safeServerTimestamp(),
+            name: name,
+            phone: phone
+        });
+    } catch (e) {
+        // Fallback if doc id differs
+        try {
+            const snap = await getDocs(query(collection(db, 'customers'), where('ownerId', '==', ownerUid)));
+            for (const d of snap.docs) {
+                const data = d.data();
+                if (d.id === customerId || data.id === customerId || (phone && data.phone === phone)) {
+                    await safeUpdateDoc(doc(db, 'customers', d.id), {
+                        status: 'removed',
+                        removedAt: safeServerTimestamp(),
+                        name: data.name || name,
+                        phone: data.phone || phone
+                    });
+                }
+            }
+        } catch (e2) {
+            console.error(e2);
+        }
+    }
+
+    // Queue only
+    try {
+        saveQueue(getQueue().filter(e => e.customerId !== customerId));
+        const qs = await getDocs(query(
+            collection(db, 'queues'),
+            where('ownerId', '==', ownerUid),
+            where('customerId', '==', customerId)
+        ));
+        for (const d of qs.docs) {
+            await safeDeleteDoc(doc(db, 'queues', d.id));
+        }
+        if (typeof renderQueue === 'function') renderQueue();
+    } catch (e) { }
+
+    populateCustomerDropdowns();
+    await renderCustomers();
+    renderBahiCustomers();
+    showToast(
+        currentLang === 'en' ? 'Removed from list. Bahi kept.' : 'सूची से हटाया। बही सुरक्षित।',
+        'success'
+    );
+}
+
+window.renderBahiCustomers = async function () {
     const list = document.getElementById('bahi-customers-list');
     if (!list) return;
-    if (customers.length === 0) {
-        list.innerHTML = '<div class="list-item empty-state"><div class="item-info"><p data-i18n="noCustomers">' + locales[currentLang].noCustomers + '</p></div></div>';
+
+    const ownerUid = localStorage.getItem('user_uid');
+    const byId = {};
+
+    // From Firestore customers (including removed)
+    try {
+        const snap = await getDocs(query(collection(db, 'customers'), where('ownerId', '==', ownerUid)));
+        snap.forEach(d => {
+            const data = d.data();
+            const id = data.id || d.id;
+            byId[id] = {
+                id: id,
+                name: data.name || 'Customer',
+                phone: data.phone || ''
+            };
+        });
+    } catch (e) {
+        console.error(e);
+    }
+
+    // Merge local history / water_history / bahi_contacts (backup)
+    const active = getCustomers();
+    active.forEach(c => {
+        byId[c.id] = { id: c.id, name: c.name, phone: c.phone || '' };
+    });
+    const historyMap = JSON.parse(localStorage.getItem('customer_history') || '{}');
+    const bahiContacts = JSON.parse(localStorage.getItem('bahi_contacts') || '{}');
+    Object.keys(bahiContacts).forEach(cid => {
+        if (!byId[cid]) {
+            byId[cid] = {
+                id: cid,
+                name: bahiContacts[cid].name || 'Customer',
+                phone: bahiContacts[cid].phone || ''
+            };
+        }
+    });
+    Object.keys(historyMap).forEach(cid => {
+        if (historyMap[cid] && historyMap[cid].length && !byId[cid]) {
+            const h = customerData[cid] || bahiContacts[cid] || {};
+            byId[cid] = { id: cid, name: h.name || 'Customer', phone: h.phone || '' };
+        }
+    });
+
+    const rows = Object.values(byId);
+    if (rows.length === 0) {
+        list.innerHTML = '<div class="list-item empty-state"><div class="item-info"><p data-i18n="noCustomers">' +
+            locales[currentLang].noCustomers + '</p></div></div>';
         return;
     }
-    list.innerHTML = customers.map(c => '<div class="list-item" onclick="openBahiLedger(\'' + c.id + '\')"><div class="item-info"><h4>' + c.name + '</h4><p>' + c.phone + '</p></div><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--ios-gray)" stroke-width="2"><polyline points="9 18 15 12 9 6"></polyline></svg></div>').join('');
+
+    list.innerHTML = rows.map(c =>
+        '<div class="list-item" onclick="openBahiLedger(\'' + c.id + '\')">' +
+        '<div class="item-info"><h4>' + (c.name || 'Customer') + '</h4><p>' + (c.phone || '') + '</p></div>' +
+        '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--ios-gray)" stroke-width="2">' +
+        '<polyline points="9 18 15 12 9 6"></polyline></svg></div>'
+    ).join('');
 };
 
 window.openBahiLedger = function (id) {
@@ -584,25 +938,44 @@ window.openBahiLedger = function (id) {
 
     const allWaterAmt = waters.reduce((s, w) => s + (parseFloat(w.amount) || 0), 0);
     const allPaidAmt = pays.reduce((s, p) => s + (parseFloat(p.amount) || 0), 0);
-    const netDue = Math.max(0, allWaterAmt - allPaidAmt);   // ₹0 for Suraj
-    const finalBalance = allWaterAmt - allPaidAmt;            // ₹-315 for Suraj
+    const netDue = Math.max(0, allWaterAmt - allPaidAmt);
+    const finalBalance = allWaterAmt - allPaidAmt;
 
     const sorted = history.slice().sort((a, b) => new Date(a.date) - new Date(b.date));
     let runningBalance = 0;
 
     const ledgerRows = sorted.map(entry => {
-        let debit = 0, credit = 0, desc = '';
+        let debit = 0, credit = 0, title = '', noteHtml = '';
+
         if (entry.type === 'water') {
             debit = entry.amount || 0;
             runningBalance += debit;
-            desc = 'Water: ' + entry.start + '-' + entry.end + ' (' + entry.duration + ' hrs)';
+            title = 'Water: ' + entry.start + '-' + entry.end + ' (' + entry.duration + ' hrs)';
         } else {
             credit = entry.amount || 0;
             runningBalance -= credit;
-            desc = 'Payment · ' + (entry.mode || 'Cash') + (entry.note ? ' · ' + entry.note : '');
+            title = 'Payment · ' + (entry.mode || 'Cash');
+            if (entry.note) {
+                noteHtml = '<p style="font-size:12px;color:var(--ios-gray);margin-top:2px;">' + entry.note + '</p>';
+            }
         }
 
-        return '<div class="list-item" style="flex-direction: column; align-items: flex-start; gap: 4px;"><div style="display:flex; justify-content:space-between; width:100%;"><div class="item-info"><h4>' + desc + '</h4><p style="font-size:12px; color:var(--ios-gray);">' + entry.date + '</p></div><div style="text-align:right; min-width:80px;"><div style="font-size:13px; color:var(--ios-red);">' + (debit ? '₹' + debit : '') + '</div><div style="font-size:13px; color:var(--ios-green);">' + (credit ? '₹' + credit : '') + '</div></div></div><div style="width:100%; text-align:right; font-size:12px; color:var(--ios-gray); border-top:1px solid var(--ios-border); padding-top:4px;">Balance: <strong style="color:' + (runningBalance > 0 ? 'var(--ios-red)' : 'var(--ios-green)') + ';">₹' + runningBalance + '</strong></div></div>';
+        return '<div class="list-item" style="flex-direction: column; align-items: flex-start; gap: 4px;">' +
+            '<div style="display:flex; justify-content:space-between; width:100%;">' +
+            '<div class="item-info">' +
+            '<h4>' + title + '</h4>' +
+            noteHtml +
+            '<p style="font-size:12px; color:var(--ios-gray); margin-top: 5px; color: #fa8072;">' + entry.date + '</p>' +
+            '</div>' +
+            '<div style="text-align:right; min-width:80px;">' +
+            '<div style="font-size:13px; color:var(--ios-red);">' + (debit ? '₹' + debit : '') + '</div>' +
+            '<div style="font-size:13px; color:var(--ios-green);">' + (credit ? '₹' + credit : '') + '</div>' +
+            '</div>' +
+            '</div>' +
+            '<div style="width:100%; text-align:right; font-size:12px; color:var(--ios-gray); border-top:1px solid var(--ios-border); padding-top:4px;">Balance: <strong style="color:' +
+            (runningBalance > 0 ? 'var(--ios-red)' : 'var(--ios-green)') +
+            ';">₹' + runningBalance + '</strong></div>' +
+            '</div>';
     }).join('');
 
     list.innerHTML = ledgerRows;
@@ -2826,7 +3199,7 @@ window.openCustomerDetail = function (id) {
             if (idx === 0) lastEntry = entry.date;
             const modeLabel = entry.mode || 'Cash';
             const notePart = entry.note ? ' · ' + entry.note : '';
-            return '<div class="list-item"><div class="item-info"><h4>Payment · ' + modeLabel + '</h4><p>' + entry.date + notePart + '</p></div><div class="item-value text-green">-₹' + entry.amount + '</div></div>';
+            return '<div class="list-item"><div class="item-info"><h4>Payment · ' + modeLabel + '</h4><p' + entry.date + '</p>' + (entry.note ? '<p style="font-size:12px;color:var(--ios-gray);margin-top:2px;">' + entry.note + '</p>' : '') + '</div><div class="item-value text-green">-₹' + entry.amount + '</div></div>';
         }
     }).join('');
 

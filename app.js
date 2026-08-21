@@ -1174,31 +1174,31 @@ window.openBahiLedger = async function (id) {
 
 let dashboardPeriod = 'today';
 
+window.onDashPeriodChange = function (period) {
+    setDashboardPeriod(period);
+};
+
 window.setDashboardPeriod = function (period) {
-    dashboardPeriod = period;
-    document.querySelectorAll('.period-btn').forEach(b => {
-        const isActive = b.dataset.period === period;
-        b.classList.toggle('active', isActive);
-        if (isActive) {
-            b.style.background = 'var(--ios-blue)';
-            b.style.color = '#fff';
-            b.style.border = 'none';
-        } else {
-            b.style.background = 'var(--card)';
-            b.style.color = 'var(--text)';
-            b.style.border = '1px solid var(--separator)';
-        }
-    });
+    dashboardPeriod = period || 'today';
+
+    const sel = document.getElementById('dash-period-select');
+    if (sel && sel.value !== dashboardPeriod) sel.value = dashboardPeriod;
+
     const custom = document.getElementById('custom-date-range');
-    if (custom) custom.style.display = period === 'custom' ? 'grid' : 'none';
-    if (period === 'custom') {
+    if (custom) {
+        custom.style.display = dashboardPeriod === 'custom' ? 'grid' : 'none';
+    }
+
+    if (dashboardPeriod === 'custom') {
         const from = document.getElementById('dash-from-date');
         const to = document.getElementById('dash-to-date');
-        if (from && !from.value) from.value = new Date().toISOString().split('T')[0];
-        if (to && !to.value) to.value = new Date().toISOString().split('T')[0];
+        const today = new Date().toISOString().split('T')[0];
+        if (from && !from.value) from.value = today;
+        if (to && !to.value) to.value = today;
         if (from) from.onchange = updateDashboardStats;
         if (to) to.onchange = updateDashboardStats;
     }
+
     updateDashboardStats();
 };
 
@@ -2461,7 +2461,7 @@ const locales = {
         appSubtitle: "Khet ke paani ka poora hisab, ab mobile par.",
         mobileNumber: "Mobile Number", login: "Send OTP", enterOtp: "Enter OTP", verifyLogin: "Verify & Login",
         ownerAccount: "Owner Account", greeting: "Namaste, Ram Bhai",
-        todaySummary: "Today\'s Summary", waterUsed: "Water Used", revenue: "Revenue", received: "Received", pending: "Pending",
+        todaySummary: "Summary", waterUsed: "Water Used", revenue: "Revenue", received: "Received", pending: "Pending",
         quickActions: "Quick Actions", paaniHisab: "Paani Ka Hisab", payment: "Payment", pendingPayments: "Pending Payments",
         navHome: "Home", navCustomers: "Customers", navBahi: "Bahi",
         customer: "Customer", startTime: "Start Time", endTime: "End Time", duration: "Duration", rate: "Rate", totalAmount: "Total Amount", save: "Save Record",
@@ -2564,7 +2564,7 @@ const locales = {
         appSubtitle: "खेत के पानी का पूरा हिसाब, अब मोबाइल पर।",
         mobileNumber: "मोबाइल नंबर", login: "OTP भेजें", enterOtp: "OTP दर्ज करें", verifyLogin: "वेरिफाई और लॉगिन करें",
         ownerAccount: "मालिक खाता", greeting: "नमस्ते, राम भाई",
-        todaySummary: "आज का सारांश", waterUsed: "पानी लगा", revenue: "कुल कमाई", received: "प्राप्त हुआ", pending: "बाकी",
+        todaySummary: "सारांश", waterUsed: "पानी लगा", revenue: "कुल कमाई", received: "प्राप्त हुआ", pending: "बाकी",
         quickActions: "तुरंत कार्य", paaniHisab: "पानी का हिसाब", payment: "भुगतान", pendingPayments: "बाकी भुगतान",
         navHome: "होम", navCustomers: "ग्राहक", navBahi: "बही-खाता",
         customer: "ग्राहक चुनें", startTime: "शुरू का समय", endTime: "बंद का समय", duration: "कुल समय", rate: "रेट", totalAmount: "कुल राशि", save: "सेव करें",

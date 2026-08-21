@@ -1264,21 +1264,107 @@ window.updateDashboardStats = function () {
     if (penEl) penEl.innerText = '₹' + Math.round(pending);
 };
 
-window.saveDailyNote = function () {
+window.saveDailyNote = async function () {
     const input = document.getElementById('daily-note-input');
     if (!input) return;
+
     const note = input.value.trim();
-    const today = new Date().toISOString().split('T')[0];
-    const notes = JSON.parse(localStorage.getItem('daily_notes') || '{}');
-    notes[today] = note;
-    localStorage.setItem('daily_notes', JSON.stringify(notes));
-    showToast(currentLang === 'en' ? 'Note saved' : 'नोट सेव हो गया', 'success');
+    const ownerUid = localStorage.getItem('user_uid');
+    if (!ownerUid) return;
+
+    if (!note) {
+        showToast(
+            currentLang === 'en' ? 'Write something first' : 'पहले कुछ लिखें',
+            'error'
+        );
+        return;
+    }
+
+    const payload = {
+        ownerUid: ownerUid,
+        message: note,
+        updatedAt: safeServerTimestamp(),
+        date: new Date().toISOString().split('T')[0]
+    };
+
+    try {
+        // One doc per owner — latest announcement
+        await safeSetDoc(doc(db, 'announcements', ownerUid), payload);
+
+        // Optional: also keep local copy for owner UI
+        const today = payload.date;
+        const notes = JSON.parse(localStorage.getItem('daily_notes') || '{}');
+        notes[today] = note;
+        localStorage.setItem('daily_notes', JSON.stringify(notes));
+
+        showToast(
+            currentLang === 'en' ? 'Announcement sent to customers' : 'ग्राहकों को घोषणा भेज दी गई',
+            'success'
+        );
+    } catch (e) {
+        console.error(e);
+        showToast(
+            currentLang === 'en' ? 'Failed to send' : 'भेजने में विफल',
+            'error'
+        );
+    }
 };
 
-function loadDailyNote() {
+window.clearAnnouncement = async function () {
+    const ownerUid = localStorage.getItem('user_uid');
+    if (!ownerUid) return;
+
+    showConfirmPopup(
+        currentLang === 'en' ? 'Remove announcement' : 'घोषणा हटाएं',
+        currentLang === 'en'
+            ? 'This will remove the announcement for all linked customers.'
+            : 'यह सभी लिंक किए ग्राहकों से घोषणा हटा देगा।',
+        currentLang === 'en' ? 'Remove' : 'हटाएं',
+        currentLang === 'en' ? 'Cancel' : 'रद्द करें',
+        async function () {
+            try {
+                await safeDeleteDoc(doc(db, 'announcements', ownerUid));
+            } catch (e) {
+                console.error(e);
+            }
+
+            const input = document.getElementById('daily-note-input');
+            if (input) input.value = '';
+
+            const today = new Date().toISOString().split('T')[0];
+            const notes = JSON.parse(localStorage.getItem('daily_notes') || '{}');
+            delete notes[today];
+            localStorage.setItem('daily_notes', JSON.stringify(notes));
+
+            showToast(
+                currentLang === 'en' ? 'Announcement removed' : 'घोषणा हटा दी गई',
+                'success'
+            );
+        },
+        null
+    );
+};
+
+async function loadDailyNote() {
     const input = document.getElementById('daily-note-input');
     if (!input) return;
+
+    const ownerUid = localStorage.getItem('user_uid');
     const today = new Date().toISOString().split('T')[0];
+
+    // Prefer server
+    if (ownerUid) {
+        try {
+            const snap = await getDoc(doc(db, 'announcements', ownerUid));
+            if (snap.exists()) {
+                input.value = snap.data().message || '';
+                return;
+            }
+        } catch (e) {
+            console.error(e);
+        }
+    }
+
     const notes = JSON.parse(localStorage.getItem('daily_notes') || '{}');
     input.value = notes[today] || '';
 }
@@ -1459,6 +1545,21 @@ window.renderMyTubewell = async function () {
             } catch (e) { }
         }
 
+        let announcement = '';
+        try {
+            const aSnap = await getDoc(doc(db, 'announcements', ownerUid));
+            if (aSnap.exists() && aSnap.data().message) {
+                announcement = aSnap.data().message;
+            }
+        } catch (e) { }
+
+        const announcementBlock = announcement
+            ? ('<div style="margin-top:8px;padding:12px;background:rgba(0,122,255,0.08);border-radius:10px;width:100%;">' +
+                '<p style="font-size:12px;color:var(--ios-blue);margin-bottom:4px;font-weight:600;">' +
+                (currentLang === 'en' ? 'Announcement' : 'घोषणा') + '</p>' +
+                '<p style="font-size:14px;color:var(--text);">' + announcement + '</p></div>')
+            : '';
+
         const st = twData.status || 'stopped';
         let statusText, statusColor, detailText;
 
@@ -1501,6 +1602,7 @@ window.renderMyTubewell = async function () {
             '</div>' +
             '<p style="color: var(--ios-gray); font-size: 14px;">' + ownerName + ' • ' + (twData.location || '') + '</p>' +
             '<p style="color: var(--ios-gray); font-size: 14px;">Rate: ₹' + (twData.rate || 150) + '/hr</p>' +
+            announcementBlock +
             '<div style="margin-top: 8px; padding: 12px; background: var(--bg); border-radius: 10px; width: 100%;">' +
             '<p style="font-size: 13px; color: var(--ios-gray); margin-bottom: 4px;">' +
             (currentLang === 'en' ? 'Current Status' : 'वर्तमान स्थिति') + '</p>' +
@@ -2452,6 +2554,10 @@ const locales = {
         notesReminder: "Today's Note",
         saveNote: "Save Note",
         noNotes: "No notes for today",
+        announcement: "Announcement",
+        sendAnnouncement: "Send",
+        notesReminder: "Announcement",
+        removeAnnouncement: "Remove"
     },
     hi: {
         appTitle: "अपना ट्यूबवेल",
@@ -2557,6 +2663,10 @@ const locales = {
         notesReminder: "आज का नोट",
         saveNote: "नोट सेव करें",
         noNotes: "आज कोई नोट नहीं",
+        announcement: "घोषणा",
+        sendAnnouncement: "भेजें",
+        notesReminder: "घोषणा",
+        removeAnnouncement: "हटाएं"
     }
 };
 

@@ -2032,53 +2032,132 @@ window.renderLinkRequests = async function () {
     }).join('');
 };
 
+let pendingAcceptLink = null;
+
 window.acceptLinkRequest = async function (requestId, customerUid, customerPhone, customerName) {
+    const options = getOwnerTubewellOptions();
+
+    if (options.length <= 1) {
+        // Only one tubewell → primary (or the only one)
+        await finishAcceptLinkRequest(
+            requestId,
+            customerUid,
+            customerPhone,
+            customerName,
+            options[0] ? options[0].id : 'primary'
+        );
+        return;
+    }
+
+    // Multiple → ask which tubewell
+    pendingAcceptLink = {
+        requestId: requestId,
+        customerUid: customerUid,
+        customerPhone: customerPhone,
+        customerName: customerName
+    };
+
+    const sel = document.getElementById('pick-tubewell-select');
+    if (sel) {
+        sel.innerHTML = options.map(function (o) {
+            return '<option value="' + o.id + '">' + o.name + '</option>';
+        }).join('');
+    }
+    openModal('pick-tubewell-modal');
+};
+
+window.confirmAcceptLinkWithTubewell = async function () {
+    if (!pendingAcceptLink) return;
+    const sel = document.getElementById('pick-tubewell-select');
+    const tubewellId = (sel && sel.value) ? sel.value : 'primary';
+    const p = pendingAcceptLink;
+    pendingAcceptLink = null;
+    closeModal('pick-tubewell-modal');
+    await finishAcceptLinkRequest(
+        p.requestId,
+        p.customerUid,
+        p.customerPhone,
+        p.customerName,
+        tubewellId
+    );
+};
+
+async function finishAcceptLinkRequest(requestId, customerUid, customerPhone, customerName, tubewellId) {
     const ownerUid = localStorage.getItem('user_uid');
     const ownerPhone = localStorage.getItem('user_phone');
+    const ownerInfo = JSON.parse(localStorage.getItem('user_info') || '{}');
+    const twId = tubewellId || 'primary';
 
-    // Update request status
-    await safeUpdateDoc(doc(db, 'link_requests', requestId), { status: 'accepted' });
+    await safeUpdateDoc(doc(db, 'link_requests', requestId), {
+        status: 'accepted',
+        tubewellId: twId
+    });
 
-    // Add to customers collection
+    const twInfo = getTubewellDetailsById(twId);
+
     const custId = 'cust_' + Date.now();
     await safeSetDoc(doc(db, 'customers', custId), {
         id: custId,
         name: customerName || customerPhone,
         phone: customerPhone,
         customerUid: customerUid,
-        tubewellId: 'primary',
+        tubewellId: twInfo.tubewellId,
+        tubewellName: twInfo.tubewellName,
         ownerId: ownerUid,
         ownerPhone: ownerPhone,
+        status: 'active',
         linkedAt: safeServerTimestamp()
     });
 
-    // Create customer_link doc
     await safeSetDoc(doc(db, 'customer_links', customerUid + '_' + ownerUid), {
-        customerUid,
-        customerPhone,
+        customerUid: customerUid,
+        customerPhone: customerPhone,
         customerName: customerName || '',
-        ownerUid,
-        ownerPhone,
-        tubewellId: 'primary',
+        ownerUid: ownerUid,
+        ownerPhone: ownerPhone,
+        ownerName: ownerInfo.name || '',
+        tubewellId: twInfo.tubewellId,
+        tubewellName: twInfo.tubewellName,
+        tubewellRate: twInfo.tubewellRate,
+        tubewellLocation: twInfo.tubewellLocation,
+        mapLink: twInfo.mapLink || '',
         status: 'linked',
         linkedAt: safeServerTimestamp()
     });
 
-    // Notify customer
     await safeAddDoc(collection(db, 'notifications'), {
         toUid: customerUid,
         type: 'request_accepted',
         title: currentLang === 'en' ? 'Request accepted' : 'अनुरोध स्वीकार',
         body: locales[currentLang].requestAcceptedMsg,
-        requestData: { ownerUid: ownerUid, ownerPhone: ownerPhone },
+        requestData: {
+            ownerUid: ownerUid,
+            ownerPhone: ownerPhone,
+            tubewellId: twId
+        },
         read: false,
         createdAt: safeServerTimestamp()
     });
 
+    // Local customers list
+    const customers = getCustomers();
+    if (!customers.some(c => c.customerUid === customerUid || c.phone === customerPhone)) {
+        customers.push({
+            id: custId,
+            name: customerName || customerPhone,
+            phone: customerPhone,
+            customerUid: customerUid,
+            tubewellId: twId,
+            ownerId: ownerUid,
+            status: 'active'
+        });
+        saveCustomers(customers);
+    }
+
     renderLinkRequests();
     renderCustomers();
     showToast(currentLang === 'en' ? 'Customer linked!' : 'ग्राहक जुड़ गया!', 'success');
-};
+}
 
 window.rejectLinkRequest = async function (requestId, customerUid) {
     const ownerUid = localStorage.getItem('user_uid');
@@ -2099,6 +2178,33 @@ window.rejectLinkRequest = async function (requestId, customerUid) {
     renderLinkRequests();
     showToast(currentLang === 'en' ? 'Request rejected' : 'अनुरोध अस्वीकार कर दिया', 'info');
 };
+
+
+function getTubewellDetailsById(tubewellId) {
+    const primary = getTubewellData() || {};
+    const extras = JSON.parse(localStorage.getItem('tubewell_extras') || '[]');
+    const id = tubewellId || 'primary';
+
+    if (id === 'primary') {
+        return {
+            tubewellId: 'primary',
+            tubewellName: primary.name || 'Tubewell',
+            tubewellRate: primary.rate || 150,
+            tubewellLocation: primary.location || '',
+            mapLink: primary.mapLink || ''
+        };
+    }
+
+    const idx = parseInt(String(id).replace('extra_', ''), 10);
+    const tw = extras[idx] || {};
+    return {
+        tubewellId: id,
+        tubewellName: tw.name || 'Tubewell',
+        tubewellRate: tw.rate || 150,
+        tubewellLocation: tw.location || '',
+        mapLink: tw.mapLink || ''
+    };
+}
 
 /* --- REAL-TIME LISTENERS --- */
 let unsubTubewell = null;
@@ -3677,6 +3783,27 @@ window.addNewTubewell = async function () {
     document.getElementById('new-tw-location').value = '';
     document.getElementById('new-tw-rate').value = '150';
     showToast(currentLang === 'en' ? "Tubewell Added!" : "ट्यूबवेल जोड़ दिया गया!", "success");
+}
+
+function getOwnerTubewellOptions() {
+    const primary = getTubewellData() || {};
+    const extras = JSON.parse(localStorage.getItem('tubewell_extras') || '[]');
+    const list = [];
+
+    if (primary.name && !primary.removed) {
+        list.push({ id: 'primary', name: primary.name || 'Primary' });
+    }
+    extras.forEach(function (tw, i) {
+        if (tw && tw.name) {
+            list.push({ id: 'extra_' + i, name: tw.name });
+        }
+    });
+
+    // Always at least primary slot if nothing named
+    if (list.length === 0) {
+        list.push({ id: 'primary', name: primary.name || 'Primary' });
+    }
+    return list;
 }
 
 /* --- CUSTOMER DETAIL VIEW --- */

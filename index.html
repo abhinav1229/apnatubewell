@@ -1132,6 +1132,55 @@
     </div>
 
 
+    <!-- EDIT WATER MODAL -->
+    <div id="edit-water-modal" class="modal-overlay">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>Edit Water Entry</h3>
+                <button class="close-btn" onclick="closeModal('edit-water-modal')">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                        stroke-width="2.5">
+                        <line x1="18" y1="6" x2="6" y2="18" />
+                        <line x1="6" y1="6" x2="18" y2="18" />
+                    </svg>
+                </button>
+            </div>
+            <div class="modal-body">
+                <input type="hidden" id="edit-water-id">
+                <div class="form-group">
+                    <label>Date</label>
+                    <input type="date" id="edit-water-date">
+                </div>
+                <div class="time-grid">
+                    <div class="form-group">
+                        <label>Start Time</label>
+                        <input type="time" id="edit-water-start">
+                    </div>
+                    <div class="form-group">
+                        <label>End Time</label>
+                        <input type="time" id="edit-water-end">
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label>Actual Hours Ran</label>
+                    <input type="number" id="edit-water-duration" step="0.01" min="0.01" oninput="calculateEditWater()">
+                </div>
+                <div class="form-group">
+                    <label>Rate (₹/hr)</label>
+                    <input type="number" id="edit-water-rate" min="1" oninput="calculateEditWater()">
+                </div>
+                <div class="calc-box">
+                    <div class="calc-row total">
+                        <span>Amount</span>
+                        <strong id="edit-water-amount" class="text-blue">₹0</strong>
+                    </div>
+                </div>
+                <button class="btn-primary mt-4" onclick="saveEditWater()">Update & Send for Approval</button>
+            </div>
+        </div>
+    </div>
+
+
     <script type="module" src="app.js"></script>
 </body>
 

@@ -520,6 +520,7 @@ window.stopWaterSession = async function () {
     const startDate = tw.currentStartDate || new Date().toISOString().split('T')[0];
     const endTime = new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false });
     const endDate = new Date().toISOString().split('T')[0];
+    const today = new Date().toISOString().split('T')[0];
 
     const startDateTime = new Date(startDate + 'T' + startTime);
     let endDateTime = new Date(endDate + 'T' + endTime);
@@ -557,6 +558,7 @@ window.stopWaterSession = async function () {
         rate,
         amount,
         status: 'pending',
+        approval_status: 'awaiting_approval',
         type: 'water',
         date: today,
         created_at: safeServerTimestamp(),
@@ -605,14 +607,34 @@ window.stopWaterSession = async function () {
     const custHistory = JSON.parse(localStorage.getItem('customer_history') || '{}');
     if (!custHistory[tw.currentCustomer]) custHistory[tw.currentCustomer] = [];
     custHistory[tw.currentCustomer].push({
-        type: 'water', date: today, start: startTime, end: endTime,
-        duration: parseFloat(duration.toFixed(2)), rate, amount, status: 'pending'
+        id: usageRef.id,
+        type: 'water',
+        date: today,
+        start: startTime,
+        end: endTime,
+        duration: parseFloat(duration.toFixed(2)),
+        rate,
+        amount,
+        status: 'pending'
     });
     localStorage.setItem('customer_history', JSON.stringify(custHistory));
-    if (!customerData[tw.currentCustomer]) customerData[tw.currentCustomer] = { name: customerName, phone: customerPhone, history: [] };
+    if (!customerData[tw.currentCustomer]) {
+        customerData[tw.currentCustomer] = {
+            name: customerName,
+            phone: customerPhone,
+            history: []
+        };
+    }
     customerData[tw.currentCustomer].history.push({
-        type: 'water', date: today, start: startTime, end: endTime,
-        duration: parseFloat(duration.toFixed(2)), rate, amount, status: 'pending'
+        id: usageRef.id,
+        type: 'water',
+        date: today,
+        start: startTime,
+        end: endTime,
+        duration: parseFloat(duration.toFixed(2)),
+        rate,
+        amount,
+        status: 'pending'
     });
 
     renderStatusCard();
@@ -2462,13 +2484,174 @@ window.startOwnerListeners = function () {
     });
     listenerUnsubs.push(unsubReq);
 
-    // Water usage sync
     const uq = query(collection(db, 'water_usage'), where('business_id', '==', ownerUid));
-    const unsubUsage = onSnapshot(uq, () => {
+    const unsubUsage = onSnapshot(uq, (snapshot) => {
+        snapshot.docChanges().forEach(change => {
+            if (change.type === 'modified') {
+                const data = change.doc.data();
+                const entryId = change.doc.id;
+                const history = getWaterHistory();
+                const idx = history.findIndex(h => h.id === entryId);
+                if (idx >= 0) {
+                    history[idx].approval_status = data.approval_status;
+                    history[idx].amount = data.amount;
+                    history[idx].duration = data.duration;
+                    history[idx].date = data.date;
+                    history[idx].start = data.start_time;
+                    history[idx].end = data.end_time;
+                    history[idx].rate = data.rate;
+                    saveWaterHistory(history);
+                }
+                const custHistory = JSON.parse(localStorage.getItem('customer_history') || '{}');
+                Object.keys(custHistory).forEach(cid => {
+                    const eidx = custHistory[cid].findIndex(e => e.id === entryId);
+                    if (eidx >= 0) {
+                        custHistory[cid][eidx].approval_status = data.approval_status;
+                        custHistory[cid][eidx].amount = data.amount;
+                        custHistory[cid][eidx].duration = data.duration;
+                        custHistory[cid][eidx].date = data.date;
+                        custHistory[cid][eidx].start = data.start_time;
+                        custHistory[cid][eidx].end = data.end_time;
+                        custHistory[cid][eidx].rate = data.rate;
+                    }
+                });
+                localStorage.setItem('customer_history', JSON.stringify(custHistory));
+                Object.keys(customerData).forEach(cid => {
+                    const ch = customerData[cid].history || [];
+                    const eidx = ch.findIndex(e => e.id === entryId);
+                    if (eidx >= 0) {
+                        ch[eidx].approval_status = data.approval_status;
+                        ch[eidx].amount = data.amount;
+                        ch[eidx].duration = data.duration;
+                        ch[eidx].date = data.date;
+                        ch[eidx].start = data.start_time;
+                        ch[eidx].end = data.end_time;
+                        ch[eidx].rate = data.rate;
+                    }
+                });
+            }
+        });
         syncOwnerUsageFromServer();
+        updateDashboardStats();
+        renderPendingPayments();
+        if (window.currentCustomerId && document.getElementById('view-customer-detail').classList.contains('active')) {
+            renderCustomerDetailUI(window.currentCustomerId);
+        }
     });
     listenerUnsubs.push(unsubUsage);
     syncOwnerUsageFromServer();
+};
+
+window.renderCustomerDetailUI = function (id) {
+    window.currentCustomerId = id;
+    const listCust = getCustomerById(id) || {};
+    let displayName = listCust.name || (customerData[id] && customerData[id].name) || 'Customer';
+    const accountDeleted = listCust.accountDeleted === true;
+    if (listCust.customerUid) {
+        getDoc(doc(db, 'users', listCust.customerUid)).then(uDoc => {
+            if (uDoc.exists() && uDoc.data().accountStatus !== 'deleted') {
+                displayName = uDoc.data().name || displayName;
+                if (customerData[id]) customerData[id].name = displayName;
+            }
+        }).catch(() => { });
+    }
+    const detailView = document.getElementById('view-customer-detail');
+    if (detailView) {
+        const btns = detailView.querySelectorAll('button');
+        btns.forEach(btn => {
+            const t = (btn.innerText || btn.textContent || '').toLowerCase();
+            const isAction = t.indexOf('payment') >= 0 || t.indexOf('water') >= 0 || t.indexOf('queue') >= 0 ||
+                t.indexOf('भुगतान') >= 0 || t.indexOf('पानी') >= 0 || t.indexOf('कतार') >= 0;
+            if (isAction) {
+                btn.disabled = accountDeleted;
+                btn.style.opacity = accountDeleted ? '0.45' : '1';
+                btn.style.pointerEvents = accountDeleted ? 'none' : '';
+            }
+        });
+        let ban = document.getElementById('cust-deleted-banner');
+        if (accountDeleted) {
+            if (!ban) {
+                ban = document.createElement('div');
+                ban.id = 'cust-deleted-banner';
+                ban.style.cssText = 'padding:10px 12px;margin-bottom:12px;border-radius:10px;background:rgba(255,59,48,0.12);color:var(--ios-red);font-size:13px;';
+                const nameEl = document.getElementById('customer-detail-name');
+                if (nameEl && nameEl.parentNode) nameEl.parentNode.insertBefore(ban, nameEl.nextSibling);
+            }
+            ban.innerText = currentLang === 'en' ? 'This customer deleted their account. \n History only can be visible. Other actions are disabled.' : 'इस ग्राहक ने खाता हटा दिया है। केवल इतिहास — कार्य बंद।';
+            ban.style.display = 'block';
+        } else if (ban) ban.style.display = 'none';
+    }
+    const cust = customerData[id];
+    if (!cust) {
+        const customers = getCustomers();
+        const found = customers.find(c => c.id === id);
+        if (found) customerData[id] = { name: found.name, phone: found.phone, history: [] };
+        else return;
+    }
+    const historyList = document.getElementById('customer-history-list');
+    const allHistory = customerData[id].history || [];
+    document.getElementById('customer-detail-name').innerText = customerData[id].name;
+    if (allHistory.length === 0) {
+        historyList.innerHTML = '<div class="list-item"><div class="item-info"><p style="color: var(--ios-gray);">No entries yet.</p></div></div>';
+        document.getElementById('cust-total-due').innerText = '₹0';
+        document.getElementById('cust-total-paid').innerText = '₹0';
+        document.getElementById('cust-total-hours').innerHTML = '0 <small>Hrs</small>';
+        document.getElementById('cust-last-entry').innerText = '-';
+        showView('view-customer-detail');
+        return;
+    }
+    const waters = allHistory.filter(e => e.type === 'water');
+    const pays = allHistory.filter(e => e.type === 'payment');
+    const { settled, partial } = getSettledWaterKeys(waters, pays);
+    let totalDue = 0, totalPaid = 0, totalHours = 0, lastEntry = '-';
+    historyList.innerHTML = allHistory.slice().reverse().map((entry, idx) => {
+        if (entry.type === 'water') {
+            totalHours += entry.duration || 0;
+            if (idx === 0) lastEntry = entry.date;
+            const wkey = waterKey(entry);
+            const isSettled = entry.status === 'paid' || settled.has(wkey);
+            const partialDue = partial.get(wkey) || 0;
+            if (!isSettled) totalDue += entry.amount || 0;
+            const displayAmount = partialDue > 0 ? partialDue : entry.amount;
+            const approvalStatus = entry.approval_status || 'awaiting_approval';
+            let approvalBadge = '';
+            let editButton = '';
+            if (approvalStatus === 'awaiting_approval') {
+                approvalBadge = '<span style="font-size:11px;color:var(--ios-orange);background:rgba(255,149,0,0.12);padding:2px 8px;border-radius:6px;margin-left:8px;">' + (currentLang === 'en' ? 'Waiting for customer approval' : 'ग्राहक की स्वीकृति का इंतजार') + '</span>';
+                editButton = '<button class="btn-small" style="margin-top:6px;background:var(--ios-blue);" onclick="openEditWaterModal(\'' + (entry.id || '') + '\')">' + (currentLang === 'en' ? 'Edit' : 'एडिट') + '</button>';
+            } else if (approvalStatus === 'approved') {
+                approvalBadge = '<span style="font-size:11px;color:var(--ios-green);background:rgba(52,199,89,0.12);padding:2px 8px;border-radius:6px;margin-left:8px;">' + (currentLang === 'en' ? 'Approved' : 'स्वीकृत') + '</span>';
+            } else if (approvalStatus === 'rejected') {
+                approvalBadge = '<span style="font-size:11px;color:var(--ios-red);background:rgba(255,59,48,0.12);padding:2px 8px;border-radius:6px;margin-left:8px;">' + (currentLang === 'en' ? 'Customer Rejected' : 'ग्राहक ने अस्वीकार किया') + '</span>';
+                editButton = '<button class="btn-small" style="margin-top:6px;background:var(--ios-blue);" onclick="openEditWaterModal(\'' + (entry.id || '') + '\')">' + (currentLang === 'en' ? 'Edit' : 'एडिट') + '</button>';
+            }
+            const statusLabel = isSettled ? 'paid' : (partialDue > 0 ? 'partial' : 'pending');
+            const statusColor = isSettled ? 'text-green' : (partialDue > 0 ? 'text-orange' : 'text-red');
+            return '<div class="list-item" style="flex-direction:column;align-items:flex-start;gap:6px;">' +
+                '<div style="display:flex;justify-content:space-between;width:100%;">' +
+                '<div class="item-info">' +
+                '<h4>Water Usage' + approvalBadge + '</h4>' +
+                '<p>' + entry.date + ' • ' + entry.start + ' - ' + entry.end + ' • ' + entry.duration + ' hrs</p>' +
+                '</div>' +
+                '<div style="text-align:right;">' +
+                '<div class="item-value ' + statusColor + '">₹' + displayAmount + '</div>' +
+                '<span style="font-size: 11px; color: var(--ios-gray); text-transform: uppercase;">' + statusLabel + '</span>' +
+                '</div>' +
+                '</div>' +
+                editButton +
+                '</div>';
+        } else {
+            totalPaid += entry.amount || 0;
+            if (idx === 0) lastEntry = entry.date;
+            const modeLabel = entry.mode || 'Cash';
+            return '<div class="list-item"><div class="item-info"><h4>Payment · ' + modeLabel + '</h4><p>' + entry.date + '</p>' + (entry.note ? '<p style="font-size:12px;color:var(--ios-gray);margin-top:2px;">' + entry.note + '</p>' : '') + '</div><div class="item-value text-green">-₹' + entry.amount + '</div></div>';
+        }
+    }).join('');
+    document.getElementById('cust-total-due').innerText = '₹' + totalDue;
+    document.getElementById('cust-total-paid').innerText = '₹' + totalPaid;
+    document.getElementById('cust-total-hours').innerHTML = totalHours.toFixed(1) + ' <small>Hrs</small>';
+    document.getElementById('cust-last-entry').innerText = lastEntry;
+    showView('view-customer-detail');
 };
 
 
@@ -2489,7 +2672,7 @@ window.loadCustomerUsageFromServer = async function () {
             s1.forEach(d => {
                 if (!seen.has(d.id)) {
                     seen.add(d.id);
-                    records.push({ id: d.id, ...d.data() });
+                    records.push({ id: d.id, ...d.data(), });
                 }
             });
         }
@@ -2584,6 +2767,7 @@ window.renderCustomerUsageDashboard = async function () {
             Promise.all(water.map(async r => {
                 const { ownerName, twName } = await getOwnerAndTubewell(r.business_id);
                 const wkey = waterKey(r);
+                const { settled: settledIds, partial: partialIds } = getSettledWaterKeys(waterSorted, payments);
                 const isSettled = r.status === 'paid' || settledIds.has(wkey);
                 const isPartial = partialIds.has(wkey);
                 return { r, ownerName, twName, isSettled, isPartial, ownerId: r.business_id };
@@ -2596,7 +2780,6 @@ window.renderCustomerUsageDashboard = async function () {
                     return;
                 }
 
-                // Group by owner
                 const byOwner = {};
                 rows.forEach(row => {
                     const key = row.ownerId || 'unknown';
@@ -2604,11 +2787,32 @@ window.renderCustomerUsageDashboard = async function () {
                     byOwner[key].records.push(row);
                 });
 
-                currentList.innerHTML = Object.entries(byOwner).map(([oid, group]) => {
+                currentList.innerHTML = Object.entries(byOwner).map(([oid, grp]) => {
                     const header = '<div style="padding: 10px 16px; background: var(--bg); font-size: 13px; font-weight: 600; color: var(--ios-blue); border-bottom: 0.5px solid var(--separator);">' +
-                        (group.twName || 'Tubewell') + ' · ' + (group.ownerName || 'Owner') + '</div>';
+                        (grp.twName || 'Tubewell') + ' · ' + (grp.ownerName || 'Owner') + '</div>';
 
-                    const items = group.records.map(({ r, ownerName, twName, isSettled, isPartial }) => {
+                    const items = grp.records.map(({ r, isSettled, isPartial }) => {
+                        const approvalStatus = r.approval_status || 'awaiting_approval';
+                        let approvalBadge = '';
+                        let actionButtons = '';
+
+                        if (approvalStatus === 'awaiting_approval') {
+                            approvalBadge = '<span style="font-size:11px;color:var(--ios-orange);background:rgba(255,149,0,0.12);padding:2px 8px;border-radius:6px;">' +
+                                (currentLang === 'en' ? 'Awaiting your approval' : 'आपकी स्वीकृति का इंतजार') + '</span>';
+                            actionButtons = '<div style="display:flex;gap:8px;margin-top:8px;">' +
+                                '<button class="btn-small" style="background:var(--ios-green);flex:1;" onclick="approveWaterEntry(\'' + r.id + '\')">' +
+                                (currentLang === 'en' ? 'Approve' : 'स्वीकार करें') + '</button>' +
+                                '<button class="btn-small" style="background:var(--ios-red);flex:1;" onclick="rejectWaterEntry(\'' + r.id + '\')">' +
+                                (currentLang === 'en' ? 'Mistake' : 'गलती') + '</button>' +
+                                '</div>';
+                        } else if (approvalStatus === 'approved') {
+                            approvalBadge = '<span style="font-size:11px;color:var(--ios-green);background:rgba(52,199,89,0.12);padding:2px 8px;border-radius:6px;">' +
+                                (currentLang === 'en' ? 'Approved' : 'स्वीकृत') + '</span>';
+                        } else if (approvalStatus === 'rejected') {
+                            approvalBadge = '<span style="font-size:11px;color:var(--ios-red);background:rgba(255,59,48,0.12);padding:2px 8px;border-radius:6px;">' +
+                                (currentLang === 'en' ? 'You rejected — owner can edit' : 'आपने अस्वीकार किया — मालिक एडिट कर सकता है') + '</span>';
+                        }
+
                         let st;
                         if (isSettled) {
                             st = '<span style="font-size:11px;color:var(--ios-green);">PAID</span>';
@@ -2618,14 +2822,20 @@ window.renderCustomerUsageDashboard = async function () {
                             st = '<span style="font-size:11px;color:var(--ios-red);">PENDING</span>';
                         }
 
-                        return '<div class="list-item"><div class="item-info">' +
+                        return '<div class="list-item" style="flex-direction:column;align-items:flex-start;gap:4px;">' +
+                            '<div style="display:flex;justify-content:space-between;width:100%;">' +
+                            '<div class="item-info">' +
                             '<h4>' + (currentLang === 'en' ? 'Water' : 'पानी') + '</h4>' +
                             '<p>' + (r.date || '') + ' · ' + (r.start_time || '') + ' - ' + (r.end_time || '') +
                             ' · ' + (r.duration || 0) + ' hrs</p>' +
                             '</div>' +
-                            '<div style="text-align:right;"><div class="item-value ' +
-                            (isSettled ? 'text-green' : (isPartial ? 'text-orange' : 'text-red')) + '">₹' + (r.amount || 0) +
-                            '</div>' + st + '</div></div>';
+                            '<div style="text-align:right;">' +
+                            '<div class="item-value ' + (isSettled ? 'text-green' : (isPartial ? 'text-orange' : 'text-red')) + '">₹' + (r.amount || 0) +
+                            '</div>' + st + '</div>' +
+                            '</div>' +
+                            '<div style="width:100%;">' + approvalBadge + '</div>' +
+                            actionButtons +
+                            '</div>';
                     }).join('');
 
                     return header + items;
@@ -2664,6 +2874,34 @@ window.renderCustomerUsageDashboard = async function () {
     }
 };
 
+window.approveWaterEntry = async function (entryId) {
+    try {
+        await safeUpdateDoc(doc(db, 'water_usage', entryId), {
+            approval_status: 'approved',
+            customer_approved_at: safeServerTimestamp()
+        });
+        showToast(currentLang === 'en' ? 'Approved' : 'स्वीकृत', 'success');
+        renderCustomerUsageDashboard();
+    } catch (e) {
+        console.error('approveWaterEntry failed', e);
+        showToast(currentLang === 'en' ? 'Failed to approve' : 'स्वीकृत करने में विफल', 'error');
+    }
+};
+
+window.rejectWaterEntry = async function (entryId) {
+    try {
+        await safeUpdateDoc(doc(db, 'water_usage', entryId), {
+            approval_status: 'rejected',
+            customer_rejected_at: safeServerTimestamp()
+        });
+        showToast(currentLang === 'en' ? 'Marked as mistake' : 'गलती के रूप में चिह्नित', 'info');
+        renderCustomerUsageDashboard();
+    } catch (e) {
+        console.error('rejectWaterEntry failed', e);
+        showToast(currentLang === 'en' ? 'Failed to reject' : 'अस्वीकार करने में विफल', 'error');
+    }
+};
+
 
 window.openPaymentModal = function (customerId) {
     if (!customerId) {
@@ -2699,12 +2937,21 @@ window.syncOwnerUsageFromServer = async function () {
                     rate: r.rate,
                     amount: r.amount,
                     status: r.status || 'pending',
+                    approval_status: r.approval_status || 'awaiting_approval',
                     type: 'water'
                 });
                 if (!custHistory[cid]) custHistory[cid] = [];
                 custHistory[cid].push({
-                    type: 'water', date: r.date, start: r.start_time, end: r.end_time,
-                    duration: r.duration, rate: r.rate, amount: r.amount, status: r.status || 'pending'
+                    id: d.id,
+                    type: 'water',
+                    date: r.date,
+                    start: r.start_time,
+                    end: r.end_time,
+                    duration: r.duration,
+                    rate: r.rate,
+                    amount: r.amount,
+                    status: r.status || 'pending',
+                    approval_status: r.approval_status || 'awaiting_approval'
                 });
             } else if (r.type === 'payment') {
                 if (!custHistory[cid]) custHistory[cid] = [];
@@ -2714,6 +2961,7 @@ window.syncOwnerUsageFromServer = async function () {
                     date: r.date,
                     amount: r.amount,
                     mode: r.mode || (r.note === 'Cash' || r.note === 'UPI' || r.note === 'Online' || r.note === 'Bank' ? r.note : 'Cash'),
+                    approval_status: r.approval_status || 'awaiting_approval',
                     note: r.note || ''
                 });
             }
@@ -2991,17 +3239,544 @@ const locales = {
         periodYear: "This Year",
         periodCustom: "Custom",
         selectPeriod: "Period",
-        notesReminder: "Today's Note",
+        notesReminder: "Announcement",
         saveNote: "Save Note",
         noNotes: "No notes for today",
         announcement: "Announcement",
         sendAnnouncement: "Send",
-        notesReminder: "Announcement",
         removeAnnouncement: "Remove",
         editTubewell: "Edit Tubewell",
         linkedTubewell: "Linked Tubewell",
         myQueuePosition: "My Queue Position",
         becomeOwner: "Become an Owner",
+        saving: "Saving...",
+        errorSavingData: "Error saving data.",
+        map: "Map",
+        primary: "PRIMARY",
+        active: "ACTIVE",
+        cash: "Cash",
+        paid: "paid",
+        pending: "pending",
+        partial: "partial",
+        water: "Water",
+        waterUsage: "Water Usage",
+        paymentCash: "Payment · Cash",
+        to: "To:",
+        noUsageYet: "No usage yet",
+        noPaymentsYet: "No payments yet",
+        pleaseLoginFirst: "Please login first.",
+        noTubewellLinked: "No tubewell linked yet.",
+        openInGoogleMaps: "Open in Google Maps",
+        powerRestored: "Power restored — Available",
+        powerIssueMarked: "Marked: Power issue",
+        maintenanceModeOn: "Maintenance mode on",
+        maintenanceModeOff: "Maintenance mode off",
+        stoppedDuration: "Stopped. Duration: ",
+        hours: " hrs · ₹",
+        addedToQueue: "Added to queue",
+        removedFromQueue: "Removed from queue",
+        alreadyInQueue: "Already in queue",
+        selectCustomer: "Select a customer",
+        customerAccountDeleted: "Customer account deleted",
+        enterValidRate: "Enter a valid rate",
+        tubewellUnderMaintenance: "Tubewell under maintenance",
+        powerIssueCannotStart: "Power issue — cannot start",
+        alreadyOccupied: "Already occupied",
+        waterStarted: "Water started @ ₹",
+        perHour: "/hr",
+        enterValidPhone: "Enter valid 10-digit phone",
+        enterDOB: "Please enter Date of Birth",
+        enterAllFields: "Please fill all fields",
+        enterTubewellName: "Enter primary tubewell name",
+        welcomeBack: "Welcome back!",
+        wrongDOB: "Wrong Date of Birth. Please check details.",
+        accountDeleted: "Account deleted",
+        accountDeletedMsg: "This account was deleted. Do you want to register again with this number?",
+        registerAgain: "Register again",
+        accountExists: "Account already exists",
+        accountExistsMsg: "You already have an {0} account. Do you want to also create a {1} profile with the same details?",
+        yesCreate: "Yes, create",
+        accountNotFound: "Account not found",
+        accountNotFoundMsg: "This account does not exist. Do you want to register yourself?",
+        createNew: "Create new",
+        correctDetails: "Correct Details",
+        confirmDetails: "Confirm details and tap Register",
+        loginCancelled: "Login cancelled",
+        pleaseCorrectDetails: "Please correct your details",
+        nameVillageFilled: "Name & village filled. Confirm and save.",
+        welcome: "Welcome!",
+        profileUpdated: "Profile Updated!",
+        enterName: "Enter name",
+        enterValidRate: "Enter valid rate",
+        tubewellUpdated: "Tubewell updated",
+        tubewellAdded: "Tubewell Added!",
+        recordSaved: "Record Saved!",
+        paymentSaved: "Payment Saved!",
+        enterAmountDate: "Enter amount and date",
+        validAmount: "Enter valid amount",
+        noCustomerSelected: "No customer selected",
+        customerNotFound: "Customer not found",
+        ownerNotFound: "Owner not found",
+        notRegisteredAsOwner: "This number is not registered as an Owner",
+        cannotLinkOwnNumber: "You cannot link to your own number",
+        alreadyLinked: "Already linked",
+        alreadyRequested: "Already requested",
+        requestSent: "Request sent! Check My Tubewell section.",
+        unlinkConfirm: "Remove this link? Your old water history will still stay with the owner.",
+        unlinked: "Unlinked",
+        requestAccepted: "Request accepted!",
+        requestRejected: "Request rejected",
+        onlyOwnersAnnounce: "Only owners can send announcements",
+        onlyOwnersRemoveAnnounce: "Only owners can remove announcements",
+        announceRemoved: "Announcement removed",
+        announceSent: "Announcement sent to customers",
+        writeSomething: "Write something first",
+        failedToSend: "Failed to send",
+        updatingAccount: "Updating account...",
+        accessRemoved: "Access removed. Records kept.",
+        couldNotUpdateAccount: "Could not update account",
+        completeOwnerProfile: "Complete your owner profile",
+        switchToOwner: "Switch to owner mode? Your customer data will be preserved.",
+        continue: "Continue",
+        customerOnly: "Customer only",
+        ownerOnly: "Owner only",
+        both: "Both",
+        removeAccess: "Remove access",
+        historyKept: "History (Bahi / water) is kept.",
+        whatToRemove: "What should we remove?",
+        deleteRoleTitle: "Delete Account Access",
+        tubewellNotFound: "Tubewell not found",
+        removeTubewellConfirm: "Remove this tubewell? Customers will be unlinked. Water history will be kept.",
+        tubewellRemoved: "Tubewell removed. Customers unlinked. History kept.",
+        noEntriesYet: "No entries yet.",
+        totalHours: "Total Hours",
+        lastEntry: "Last Entry",
+        addPayment: "+ Add Payment",
+        addWater: "+ Water",
+        addQueue: "+ Queue",
+        history: "History",
+        myUsage: "My Water Usage",
+        usageHistory: "Usage History",
+        myPayments: "My Payments",
+        quickTips: "Quick tips",
+        linkTubewellTip: "Link a tubewell",
+        linkTubewellDesc: "Go to My Usage → enter owner phone to request link.",
+        checkQueueTip: "Check your queue",
+        checkQueueDesc: "Your position shows on My Usage when you are in queue.",
+        paymentsTip: "Payments",
+        paymentsDesc: "See due and paid amounts under Payments tab.",
+        phone: "Phone",
+        email: "Email",
+        linked: "Linked",
+        unlinkThisTubewell: "Unlink this tubewell",
+        currentStatus: "Current Status",
+        availableForUse: "Available for use",
+        underMaintenance: "Under maintenance",
+        powerIssueNotAvailable: "Power issue — not available",
+        runningForYou: "Running for you",
+        inUseByOther: "Currently in use by another customer",
+        due: "Due",
+        paid: "Paid",
+        hoursSmall: "Hrs",
+        next: "Next",
+        nextInQueueLabel: "Next in queue",
+        noOneWaiting: "No one waiting in queue",
+        selectCustomerFirst: "Select a customer first",
+        enterAmount: "Enter amount",
+        enterDate: "Enter date",
+        paymentMode: "Payment mode",
+        noteOptional: "Note (optional)",
+        shortNote: "Short note",
+        savePayment: "Save Payment",
+        ownerPhone: "Owner phone number",
+        sendRequest: "Send request",
+        noTubewellLinkedYet: "No tubewell linked yet. Enter owner phone below.",
+        waitingForApproval: "Waiting for owner approval",
+        newLinkRequest: "New link request",
+        wantsToConnect: " wants to connect",
+        linkToWhichTubewell: "Link to which tubewell?",
+        confirmLink: "Confirm link",
+        tubewell: "Tubewell",
+        owner: "Owner",
+        unknownOwner: "Unknown owner",
+        unknown: "Unknown",
+        softDeleteFailed: "Soft delete failed:",
+        removeAnnouncement: "Remove announcement",
+        announceRemoveConfirm: "This will remove the announcement for all linked customers.",
+        payment: "Payment",
+        waterBill: "Water Bill",
+        from: "From",
+        to: "To",
+        period: "Period",
+        custom: "Custom",
+        today: "Today",
+        thisMonth: "This Month",
+        thisYear: "This Year",
+        select: "Select",
+        allRecordsKept: "All records are saved on the server — log in again on a new phone to get your data back.",
+        forOwners: "For tubewell owners",
+        forCustomers: "For customers",
+        step1Owner: "Add customers",
+        step1OwnerDesc: "Name + phone, or accept a link request from a customer.",
+        step2Owner: "Start / Stop water",
+        step2OwnerDesc: "On Home, Start water → pick customer → set rate. On Stop, hours × rate = bill and it goes to Pending payments. The customer sees the same record live.",
+        step3Owner: "Paani Ka Hisab (manual)",
+        step3OwnerDesc: "If water already ran, enter start/end time and save a record without using the live timer.",
+        step4Owner: "+ Payment",
+        step4OwnerDesc: "On a customer's detail page, record cash/UPI received. This updates Bahi-khata for both of you.",
+        step5Owner: "Queue",
+        step5OwnerDesc: "Add customers to the queue. \"Next in queue\" and queue count show on Home.",
+        step6Owner: "Bahi-khata",
+        step6OwnerDesc: "Full ledger per customer (water + payments) stays here even if they unlink later.",
+        step1Customer: "Link",
+        step1CustomerDesc: "Enter the owner's 10-digit mobile and send a request. When they accept, the tubewell is linked.",
+        step2Customer: "Queue",
+        step2CustomerDesc: "Owner can put you in the queue. Check \"My queue position\" on My Usage.",
+        step3Customer: "Water usage",
+        step3CustomerDesc: "When the owner starts/stops water in your name, hours and amount appear automatically under My Usage.",
+        step4Customer: "Payments",
+        step4CustomerDesc: "When the owner records a payment, it shows under the Payments tab. Due amount is on your dashboard.",
+        step5Customer: "Multiple owners",
+        step5CustomerDesc: "You can link to more than one tubewell owner.",
+        searchCustomer: "Search customer...",
+        selectTubewellOption: "Select tubewell",
+        primaryTubewell: "Primary Tubewell",
+        googleMapsLink: "Google Maps link (optional)",
+        villageAddress: "Village / address",
+        removeTubewell: "Remove tubewell",
+        save: "Save",
+        enterValid10Digit: "Enter valid 10-digit phone",
+        userNotRegistered: "This number is not registered in the app",
+        accountDeletedCannotAdd: "This account has been deleted. Cannot add to contacts.",
+        userNotCustomer: "This user is not registered as a customer",
+        userHasNoName: "User has no name on profile",
+        couldNotVerify: "Could not verify number",
+        customerAdded: "Customer added: ",
+        removedFromList: "Removed from list. Bahi kept.",
+        enterValid10DigitOwner: "Enter valid 10-digit phone",
+        enterDOBError: "Please enter Date of Birth",
+        enterValid10DigitLogin: "Enter valid 10 digit number",
+        enterAllFieldsError: "Please fill all fields",
+        enterTubewellNameError: "Enter primary tubewell name",
+        welcomeBackMsg: "Welcome back!",
+        wrongDOBError: "Wrong Date of Birth. Please check details.",
+        accountDeletedOffer: "This account was deleted. Do you want to register again with this number?",
+        registerAgainBtn: "Register again",
+        accountExistsMsg: "You already have an {0} account. Do you want to also create a {1} profile with the same details?",
+        yesCreateBtn: "Yes, create",
+        accountNotFoundMsg: "This account does not exist. Do you want to register yourself?",
+        createNewBtn: "Create new",
+        correctDetailsBtn: "Correct Details",
+        confirmDetailsMsg: "Confirm details and tap Register",
+        loginCancelledMsg: "Login cancelled",
+        correctDetailsMsg: "Please correct your details",
+        nameVillageFilledMsg: "Name & village filled. Confirm and save.",
+        welcomeMsg: "Welcome!",
+        profileUpdatedMsg: "Profile Updated!",
+        enterNameError: "Enter name",
+        enterValidRateError: "Enter valid rate",
+        tubewellUpdatedMsg: "Tubewell updated",
+        tubewellAddedMsg: "Tubewell Added!",
+        recordSavedMsg: "Record Saved!",
+        paymentSavedMsg: "Payment Saved!",
+        enterAmountDateError: "Enter amount and date",
+        validAmountError: "Enter valid amount",
+        noCustomerSelectedError: "No customer selected",
+        ownerNotFoundError: "Owner not found",
+        notRegisteredOwnerError: "This number is not registered as an Owner",
+        cannotLinkOwnError: "You cannot link to your own number",
+        alreadyLinkedError: "Already linked",
+        alreadyRequestedError: "Already requested",
+        requestSentMsg: "Request sent! Check My Tubewell section.",
+        unlinkConfirmMsg: "Remove this link? Your old water history will still stay with the owner.",
+        unlinkedMsg: "Unlinked",
+        requestAcceptedMsg: "Request accepted!",
+        requestRejectedMsg: "Request rejected",
+        onlyOwnersSendError: "Only owners can send announcements",
+        onlyOwnersRemoveError: "Only owners can remove announcements",
+        announceRemovedMsg: "Announcement removed",
+        announceSentMsg: "Announcement sent to customers",
+        writeSomethingError: "Write something first",
+        failedToSendError: "Failed to send",
+        updatingAccountMsg: "Updating account...",
+        accessRemovedMsg: "Access removed. Records kept.",
+        couldNotUpdateError: "Could not update account",
+        completeOwnerProfileMsg: "Complete your owner profile",
+        switchToOwnerMsg: "Switch to owner mode? Your customer data will be preserved.",
+        continueBtn: "Continue",
+        customerOnlyBtn: "Customer only",
+        ownerOnlyBtn: "Owner only",
+        bothBtn: "Both",
+        removeAccessBtn: "Remove access",
+        historyKeptMsg: "History (Bahi / water) is kept.",
+        whatToRemoveMsg: "What should we remove?",
+        deleteRoleTitleMsg: "Delete Account Access",
+        tubewellNotFoundError: "Tubewell not found",
+        removeTubewellConfirmMsg: "Remove this tubewell? Customers will be unlinked. Water history will be kept.",
+        tubewellRemovedMsg: "Tubewell removed. Customers unlinked. History kept.",
+        noEntriesYetMsg: "No entries yet.",
+        totalHoursLabel: "Total Hours",
+        lastEntryLabel: "Last Entry",
+        addPaymentBtn: "+ Add Payment",
+        addWaterBtn: "+ Water",
+        addQueueBtn: "+ Queue",
+        historyLabel: "History",
+        myUsageLabel: "My Water Usage",
+        usageHistoryLabel: "Usage History",
+        myPaymentsLabel: "My Payments",
+        quickTipsLabel: "Quick tips",
+        linkTubewellTipTitle: "Link a tubewell",
+        linkTubewellTipDesc: "Go to My Usage → enter owner phone to request link.",
+        checkQueueTipTitle: "Check your queue",
+        checkQueueTipDesc: "Your position shows on My Usage when you are in queue.",
+        paymentsTipTitle: "Payments",
+        paymentsTipDesc: "See due and paid amounts under Payments tab.",
+        phoneLabel: "Phone",
+        emailLabel: "Email",
+        linkedLabel: "Linked",
+        unlinkThisTubewellBtn: "Unlink this tubewell",
+        currentStatusLabel: "Current Status",
+        availableForUseMsg: "Available for use",
+        underMaintenanceMsg: "Under maintenance",
+        powerIssueNotAvailableMsg: "Power issue — not available",
+        runningForYouMsg: "Running for you",
+        inUseByOtherMsg: "Currently in use by another customer",
+        dueLabel: "Due",
+        paidLabel: "Paid",
+        hoursSmallLabel: "Hrs",
+        nextLabel: "Next",
+        nextInQueueLabelMsg: "Next in queue",
+        noOneWaitingMsg: "No one waiting in queue",
+        selectCustomerFirstError: "Select a customer first",
+        enterAmountPlaceholder: "Enter amount",
+        enterDateLabel: "Enter date",
+        paymentModeLabel: "Payment mode",
+        noteOptionalLabel: "Note (optional)",
+        shortNotePlaceholder: "Short note",
+        savePaymentBtn: "Save Payment",
+        ownerPhoneLabel: "Owner phone number",
+        sendRequestBtn: "Send request",
+        noTubewellLinkedYetMsg: "No tubewell linked yet. Enter owner phone below.",
+        waitingForApprovalMsg: "Waiting for owner approval",
+        newLinkRequestMsg: "New link request",
+        wantsToConnectMsg: " wants to connect",
+        linkToWhichTubewellMsg: "Link to which tubewell?",
+        confirmLinkBtn: "Confirm link",
+        tubewellLabel: "Tubewell",
+        ownerLabel: "Owner",
+        unknownOwnerMsg: "Unknown owner",
+        unknownLabel: "Unknown",
+        softDeleteFailedMsg: "Soft delete failed:",
+        removeAnnouncementMsg: "Remove announcement",
+        announceRemoveConfirmMsg: "This will remove the announcement for all linked customers.",
+        paymentLabel: "Payment",
+        waterBillLabel: "Water Bill",
+        fromLabel: "From",
+        toLabel: "To",
+        periodLabel: "Period",
+        customLabel: "Custom",
+        todayLabel: "Today",
+        thisMonthLabel: "This Month",
+        thisYearLabel: "This Year",
+        selectLabel: "Select",
+        allRecordsKeptMsg: "All records are saved on the server — log in again on a new phone to get your data back.",
+        forOwnersLabel: "For tubewell owners",
+        forCustomersLabel: "For customers",
+        step1OwnerTitle: "Add customers",
+        step1OwnerDesc: "Name + phone, or accept a link request from a customer.",
+        step2OwnerTitle: "Start / Stop water",
+        step2OwnerDesc: "On Home, Start water → pick customer → set rate. On Stop, hours × rate = bill and it goes to Pending payments. The customer sees the same record live.",
+        step3OwnerTitle: "Paani Ka Hisab (manual)",
+        step3OwnerDesc: "If water already ran, enter start/end time and save a record without using the live timer.",
+        step4OwnerTitle: "+ Payment",
+        step4OwnerDesc: "On a customer's detail page, record cash/UPI received. This updates Bahi-khata for both of you.",
+        step5OwnerTitle: "Queue",
+        step5OwnerDesc: "Add customers to the queue. \"Next in queue\" and queue count show on Home.",
+        step6OwnerTitle: "Bahi-khata",
+        step6OwnerDesc: "Full ledger per customer (water + payments) stays here even if they unlink later.",
+        step1CustomerTitle: "Link",
+        step1CustomerDesc: "Enter the owner's 10-digit mobile and send a request. When they accept, the tubewell is linked.",
+        step2CustomerTitle: "Queue",
+        step2CustomerDesc: "Owner can put you in the queue. Check \"My queue position\" on My Usage.",
+        step3CustomerTitle: "Water usage",
+        step3CustomerDesc: "When the owner starts/stops water in your name, hours and amount appear automatically under My Usage.",
+        step4CustomerTitle: "Payments",
+        step4CustomerDesc: "When the owner records a payment, it shows under the Payments tab. Due amount is on your dashboard.",
+        step5CustomerTitle: "Multiple owners",
+        step5CustomerDesc: "You can link to more than one tubewell owner.",
+        searchCustomerPlaceholder: "Search customer...",
+        selectTubewellOptionLabel: "Select tubewell",
+        primaryTubewellLabel: "Primary Tubewell",
+        googleMapsLinkLabel: "Google Maps link (optional)",
+        villageAddressLabel: "Village / address",
+        removeTubewellLabel: "Remove tubewell",
+        saveLabel: "Save",
+        enterValid10DigitMsg: "Enter valid 10-digit phone",
+        userNotRegisteredMsg: "This number is not registered in the app",
+        accountDeletedCannotAddMsg: "This account has been deleted. Cannot add to contacts.",
+        userNotCustomerMsg: "This user is not registered as a customer",
+        userHasNoNameMsg: "User has no name on profile",
+        couldNotVerifyMsg: "Could not verify number",
+        customerAddedMsg: "Customer added: ",
+        removedFromListMsg: "Removed from list. Bahi kept.",
+        enterValid10DigitOwnerMsg: "Enter valid 10-digit phone",
+        enterDOBErrorMsg: "Please enter Date of Birth",
+        enterValid10DigitLoginMsg: "Enter valid 10 digit number",
+        enterAllFieldsErrorMsg: "Please fill all fields",
+        enterTubewellNameErrorMsg: "Enter primary tubewell name",
+        welcomeBackMsg2: "Welcome back!",
+        wrongDOBErrorMsg: "Wrong Date of Birth. Please check details.",
+        accountDeletedOfferMsg: "This account was deleted. Do you want to register again with this number?",
+        registerAgainBtn2: "Register again",
+        accountExistsMsg2: "You already have an {0} account. Do you want to also create a {1} profile with the same details?",
+        yesCreateBtn2: "Yes, create",
+        accountNotFoundMsg2: "This account does not exist. Do you want to register yourself?",
+        createNewBtn2: "Create new",
+        correctDetailsBtn2: "Correct Details",
+        confirmDetailsMsg2: "Confirm details and tap Register",
+        loginCancelledMsg2: "Login cancelled",
+        correctDetailsMsg2: "Please correct your details",
+        nameVillageFilledMsg2: "Name & village filled. Confirm and save.",
+        welcomeMsg2: "Welcome!",
+        profileUpdatedMsg2: "Profile Updated!",
+        enterNameError2: "Enter name",
+        enterValidRateError2: "Enter valid rate",
+        tubewellUpdatedMsg2: "Tubewell updated",
+        tubewellAddedMsg2: "Tubewell Added!",
+        recordSavedMsg2: "Record Saved!",
+        paymentSavedMsg2: "Payment Saved!",
+        enterAmountDateError2: "Enter amount and date",
+        validAmountError2: "Enter valid amount",
+        noCustomerSelectedError2: "No customer selected",
+        ownerNotFoundError2: "Owner not found",
+        notRegisteredOwnerError2: "This number is not registered as an Owner",
+        cannotLinkOwnError2: "You cannot link to your own number",
+        alreadyLinkedError2: "Already linked",
+        alreadyRequestedError2: "Already requested",
+        requestSentMsg2: "Request sent! Check My Tubewell section.",
+        unlinkConfirmMsg2: "Remove this link? Your old water history will still stay with the owner.",
+        unlinkedMsg2: "Unlinked",
+        requestAcceptedMsg2: "Request accepted!",
+        requestRejectedMsg2: "Request rejected",
+        onlyOwnersSendError2: "Only owners can send announcements",
+        onlyOwnersRemoveError2: "Only owners can remove announcements",
+        announceRemovedMsg2: "Announcement removed",
+        announceSentMsg2: "Announcement sent to customers",
+        writeSomethingError2: "Write something first",
+        failedToSendError2: "Failed to send",
+        updatingAccountMsg2: "Updating account...",
+        accessRemovedMsg2: "Access removed. Records kept.",
+        couldNotUpdateError2: "Could not update account",
+        completeOwnerProfileMsg2: "Complete your owner profile",
+        switchToOwnerMsg2: "Switch to owner mode? Your customer data will be preserved.",
+        continueBtn2: "Continue",
+        customerOnlyBtn2: "Customer only",
+        ownerOnlyBtn2: "Owner only",
+        bothBtn2: "Both",
+        removeAccessBtn2: "Remove access",
+        historyKeptMsg2: "History (Bahi / water) is kept.",
+        whatToRemoveMsg2: "What should we remove?",
+        deleteRoleTitleMsg2: "Delete Account Access",
+        tubewellNotFoundError2: "Tubewell not found",
+        removeTubewellConfirmMsg2: "Remove this tubewell? Customers will be unlinked. Water history will be kept.",
+        tubewellRemovedMsg2: "Tubewell removed. Customers unlinked. History kept.",
+        noEntriesYetMsg2: "No entries yet.",
+        totalHoursLabel2: "Total Hours",
+        lastEntryLabel2: "Last Entry",
+        addPaymentBtn2: "+ Add Payment",
+        addWaterBtn2: "+ Water",
+        addQueueBtn2: "+ Queue",
+        historyLabel2: "History",
+        myUsageLabel2: "My Water Usage",
+        usageHistoryLabel2: "Usage History",
+        myPaymentsLabel2: "My Payments",
+        quickTipsLabel2: "Quick tips",
+        linkTubewellTipTitle2: "Link a tubewell",
+        linkTubewellTipDesc2: "Go to My Usage → enter owner phone to request link.",
+        checkQueueTipTitle2: "Check your queue",
+        checkQueueTipDesc2: "Your position shows on My Usage when you are in queue.",
+        paymentsTipTitle2: "Payments",
+        paymentsTipDesc2: "See due and paid amounts under Payments tab.",
+        phoneLabel2: "Phone",
+        emailLabel2: "Email",
+        linkedLabel2: "Linked",
+        unlinkThisTubewellBtn2: "Unlink this tubewell",
+        currentStatusLabel2: "Current Status",
+        availableForUseMsg2: "Available for use",
+        underMaintenanceMsg2: "Under maintenance",
+        powerIssueNotAvailableMsg2: "Power issue — not available",
+        runningForYouMsg2: "Running for you",
+        inUseByOtherMsg2: "Currently in use by another customer",
+        dueLabel2: "Due",
+        paidLabel2: "Paid",
+        hoursSmallLabel2: "Hrs",
+        nextLabel2: "Next",
+        nextInQueueLabelMsg2: "Next in queue",
+        noOneWaitingMsg2: "No one waiting in queue",
+        selectCustomerFirstError2: "Select a customer first",
+        enterAmountPlaceholder2: "Enter amount",
+        enterDateLabel2: "Enter date",
+        paymentModeLabel2: "Payment mode",
+        noteOptionalLabel2: "Note (optional)",
+        shortNotePlaceholder2: "Short note",
+        savePaymentBtn2: "Save Payment",
+        ownerPhoneLabel2: "Owner phone number",
+        sendRequestBtn2: "Send request",
+        noTubewellLinkedYetMsg2: "No tubewell linked yet. Enter owner phone below.",
+        waitingForApprovalMsg2: "Waiting for owner approval",
+        newLinkRequestMsg2: "New link request",
+        wantsToConnectMsg2: " wants to connect",
+        linkToWhichTubewellMsg2: "Link to which tubewell?",
+        confirmLinkBtn2: "Confirm link",
+        tubewellLabel2: "Tubewell",
+        ownerLabel2: "Owner",
+        unknownOwnerMsg2: "Unknown owner",
+        unknownLabel2: "Unknown",
+        softDeleteFailedMsg2: "Soft delete failed:",
+        removeAnnouncementMsg2: "Remove announcement",
+        announceRemoveConfirmMsg2: "This will remove the announcement for all linked customers.",
+        paymentLabel2: "Payment",
+        waterBillLabel2: "Water Bill",
+        fromLabel2: "From",
+        toLabel2: "To",
+        periodLabel2: "Period",
+        customLabel2: "Custom",
+        todayLabel2: "Today",
+        thisMonthLabel2: "This Month",
+        thisYearLabel2: "This Year",
+        selectLabel2: "Select",
+        allRecordsKeptMsg2: "All records are saved on the server — log in again on a new phone to get your data back.",
+        forOwnersLabel2: "For tubewell owners",
+        forCustomersLabel2: "For customers",
+        step1OwnerTitle2: "Add customers",
+        step1OwnerDesc2: "Name + phone, or accept a link request from a customer.",
+        step2OwnerTitle2: "Start / Stop water",
+        step2OwnerDesc2: "On Home, Start water → pick customer → set rate. On Stop, hours × rate = bill and it goes to Pending payments. The customer sees the same record live.",
+        step3OwnerTitle2: "Paani Ka Hisab (manual)",
+        step3OwnerDesc2: "If water already ran, enter start/end time and save a record without using the live timer.",
+        step4OwnerTitle2: "+ Payment",
+        step4OwnerDesc2: "On a customer's detail page, record cash/UPI received. This updates Bahi-khata for both of you.",
+        step5OwnerTitle2: "Queue",
+        step5OwnerDesc2: "Add customers to the queue. \"Next in queue\" and queue count show on Home.",
+        step6OwnerTitle2: "Bahi-khata",
+        step6OwnerDesc2: "Full ledger per customer (water + payments) stays here even if they unlink later.",
+        step1CustomerTitle2: "Link",
+        step1CustomerDesc2: "Enter the owner's 10-digit mobile and send a request. When they accept, the tubewell is linked.",
+        step2CustomerTitle2: "Queue",
+        step2CustomerDesc2: "Owner can put you in the queue. Check \"My queue position\" on My Usage.",
+        step3CustomerTitle2: "Water usage",
+        step3CustomerDesc2: "When the owner starts/stops water in your name, hours and amount appear automatically under My Usage.",
+        step4CustomerTitle2: "Payments",
+        step4CustomerDesc2: "When the owner records a payment, it shows under the Payments tab. Due amount is on your dashboard.",
+        step5CustomerTitle2: "Multiple owners",
+        step5CustomerDesc2: "You can link to more than one tubewell owner.",
+        searchCustomerPlaceholder2: "Search customer...",
+        selectTubewellOptionLabel2: "Select tubewell",
+        primaryTubewellLabel2: "Primary Tubewell",
+        googleMapsLinkLabel2: "Google Maps link (optional)",
+        villageAddressLabel2: "Village / address",
+        removeTubewellLabel2: "Remove tubewell",
+        saveLabel2: "Save"
     },
     hi: {
         appTitle: "अपना ट्यूबवेल",
@@ -3104,19 +3879,550 @@ const locales = {
         periodYear: "इस साल",
         periodCustom: "कस्टम",
         selectPeriod: "अवधि",
-        notesReminder: "आज का नोट",
+        notesReminder: "घोषणा",
         saveNote: "नोट सेव करें",
         noNotes: "आज कोई नोट नहीं",
         announcement: "घोषणा",
         sendAnnouncement: "भेजें",
-        notesReminder: "घोषणा",
         removeAnnouncement: "हटाएं",
         editTubewell: "ट्यूबवेल एडिट करें",
         linkedTubewell: "जुड़ा हुआ ट्यूबवेल",
         myQueuePosition: "मेरी कतार में स्थिति",
         becomeOwner: "मालिक बनें",
+        saving: "सेव हो रहा है...",
+        errorSavingData: "डेटा सेव करने में त्रुटि।",
+        map: "Map",
+        primary: "PRIMARY",
+        active: "ACTIVE",
+        cash: "नकद",
+        paid: "चुकाया",
+        pending: "बाकी",
+        partial: "आंशिक",
+        water: "पानी",
+        waterUsage: "पानी का उपयोग",
+        paymentCash: "भुगतान · नकद",
+        to: "को:",
+        noUsageYet: "अभी कोई उपयोग नहीं",
+        noPaymentsYet: "अभी कोई भुगतान नहीं",
+        pleaseLoginFirst: "कृपया पहले लॉगिन करें।",
+        noTubewellLinked: "अभी तक कोई ट्यूबवेल लिंक नहीं।",
+        openInGoogleMaps: "Google Maps में खोलें",
+        powerRestored: "बिजली ठीक — उपलब्ध",
+        powerIssueMarked: "बिजली समस्या चिह्नित",
+        maintenanceModeOn: "मरम्मत मोड चालू",
+        maintenanceModeOff: "मरम्मत मोड बंद",
+        stoppedDuration: "बंद. समय: ",
+        hours: " घंटे · ₹",
+        addedToQueue: "कतार में जोड़ दिया गया",
+        removedFromQueue: "कतार से हटा दिया गया",
+        alreadyInQueue: "पहले से कतार में है",
+        selectCustomer: "ग्राहक चुनें",
+        customerAccountDeleted: "ग्राहक खाता हटाया गया",
+        enterValidRate: "सही रेट दर्ज करें",
+        tubewellUnderMaintenance: "ट्यूबवेल मरम्मत में है",
+        powerIssueCannotStart: "बिजली समस्या — शुरू नहीं कर सकते",
+        alreadyOccupied: "पहले से व्यस्त",
+        waterStarted: "पानी शुरू @ ₹",
+        perHour: "/घंटा",
+        enterValidPhone: "सही 10 अंकों का फोन दर्ज करें",
+        enterDOB: "कृपया जन्म तिथि दर्ज करें",
+        enterAllFields: "सभी फील्ड भरें",
+        enterTubewellName: "प्राथमिक ट्यूबवेल का नाम दर्ज करें",
+        welcomeBack: "वापसी का स्वागत है!",
+        wrongDOB: "गलत जन्म तिथि। कृपया विवरण जांचें।",
+        accountDeleted: "खाता हटाया गया",
+        accountDeletedMsg: "यह खाता हटा दिया गया था। क्या आप इसी नंबर से फिर पंजीकरण करना चाहते हैं?",
+        registerAgain: "फिर पंजीकरण",
+        accountExists: "खाता पहले से मौजूद है",
+        accountExistsMsg: "आपके पास पहले से {0} खाता है। क्या आप उन्हीं विवरणों से {1} प्रोफ़ाइल भी बनाना चाहते हैं?",
+        yesCreate: "हाँ, बनाएं",
+        accountNotFound: "खाता नहीं मिला",
+        accountNotFoundMsg: "यह खाता मौजूद नहीं है। क्या आप पंजीकरण करना चाहते हैं?",
+        createNew: "नया बनाएं",
+        correctDetails: "विवरण सही करें",
+        confirmDetails: "विवरण की पुष्टि करें और पंजीकरण पर टैप करें",
+        loginCancelled: "लॉगिन रद्द",
+        pleaseCorrectDetails: "कृपया अपना विवरण सही करें",
+        nameVillageFilled: "नाम और गाँव भर दिए गए। पुष्टि करके सेव करें।",
+        welcome: "स्वागत है!",
+        profileUpdated: "प्रोफाइल अपडेट हो गई!",
+        enterName: "नाम दर्ज करें",
+        enterValidRate: "सही रेट दर्ज करें",
+        tubewellUpdated: "ट्यूबवेल अपडेट हो गया",
+        tubewellAdded: "ट्यूबवेल जोड़ दिया गया!",
+        recordSaved: "हिसाब सेव हो गया!",
+        paymentSaved: "भुगतान सेव हो गया!",
+        enterAmountDate: "राशि और तारीख दर्ज करें",
+        validAmount: "सही राशि दर्ज करें",
+        noCustomerSelected: "कोई ग्राहक नहीं चुना",
+        customerNotFound: "ग्राहक नहीं मिला",
+        ownerNotFound: "मालिक नहीं मिला",
+        notRegisteredAsOwner: "यह नंबर मालिक के रूप में पंजीकृत नहीं है",
+        cannotLinkOwnNumber: "आप अपने नंबर से लिंक नहीं कर सकते",
+        alreadyLinked: "पहले से जुड़ा हुआ है",
+        alreadyRequested: "अनुरोध पहले से भेजा गया है",
+        requestSent: "अनुरोध भेज दिया गया! मेरा ट्यूबवेल सेक्शन देखें।",
+        unlinkConfirm: "यह लिंक हटाएं? पुराना पानी इतिहास मालिक के पास रहेगा।",
+        unlinked: "हटा दिया गया",
+        requestAccepted: "अनुरोध स्वीकार!",
+        requestRejected: "अनुरोध अस्वीकार",
+        onlyOwnersAnnounce: "केवल मालिक घोषणा भेज सकते हैं",
+        onlyOwnersRemoveAnnounce: "केवल मालिक घोषणा हटा सकते हैं",
+        announceRemoved: "घोषणा हटा दी गई",
+        announceSent: "ग्राहकों को घोषणा भेज दी गई",
+        writeSomething: "पहले कुछ लिखें",
+        failedToSend: "भेजने में विफल",
+        updatingAccount: "खाता अपडेट हो रहा है...",
+        accessRemoved: "एक्सेस हटा दिया गया। रिकॉर्ड सुरक्षित हैं।",
+        couldNotUpdateAccount: "खाता अपडेट नहीं हो सका",
+        completeOwnerProfile: "अपना मालिक प्रोफाइल पूरा करें",
+        switchToOwner: "मालिक मोड में स्विच करें? आपका ग्राहक डेटा सुरक्षित रहेगा।",
+        continue: "जारी रखें",
+        customerOnly: "केवल ग्राहक",
+        ownerOnly: "केवल मालिक",
+        both: "दोनों",
+        removeAccess: "एक्सेस हटाएं",
+        historyKept: "इतिहास (बही / पानी) सुरक्षित रहेगा।",
+        whatToRemove: "क्या हटाना है?",
+        deleteRoleTitle: "खाता एक्सेस हटाएं",
+        tubewellNotFound: "ट्यूबवेल नहीं मिला",
+        removeTubewellConfirm: "यह ट्यूबवेल हटाएं? ग्राहक अनलिंक होंगे। पानी का इतिहास रहेगा।",
+        tubewellRemoved: "ट्यूबवेल हटाया। ग्राहक अनलिंक। इतिहास सुरक्षित।",
+        noEntriesYet: "अभी तक कोई एंट्री नहीं।",
+        totalHours: "कुल घंटे",
+        lastEntry: "आखिरी एंट्री",
+        addPayment: "+ भुगतान जोड़ें",
+        addWater: "+ पानी",
+        addQueue: "+ कतार",
+        history: "इतिहास",
+        myUsage: "मेरा पानी उपयोग",
+        usageHistory: "उपयोग इतिहास",
+        myPayments: "मेरे भुगतान",
+        quickTips: "त्वरित सुझाव",
+        linkTubewellTip: "ट्यूबवेल लिंक करें",
+        linkTubewellDesc: "मेरा उपयोग → मालिक का नंबर डालकर अनुरोध भेजें।",
+        checkQueueTip: "अपनी कतार देखें",
+        checkQueueDesc: "जब आप कतार में हों तो मेरा उपयोग पर आपकी स्थिति दिखती है।",
+        paymentsTip: "भुगतान",
+        paymentsDesc: "भुगतान टैब के तहत बाकी और चुकाई गई राशि देखें।",
+        phone: "फोन",
+        email: "ईमेल",
+        linked: "जुड़ा हुआ",
+        unlinkThisTubewell: "इस ट्यूबवेल को हटाएं",
+        currentStatus: "वर्तमान स्थिति",
+        availableForUse: "उपयोग के लिए उपलब्ध",
+        underMaintenance: "मरम्मत में है",
+        powerIssueNotAvailable: "बिजली समस्या — उपलब्ध नहीं",
+        runningForYou: "आपके लिए चालू है",
+        inUseByOther: "वर्तमान में दूसरे ग्राहक द्वारा उपयोग में है",
+        due: "बाकी",
+        paid: "चुकाया",
+        hoursSmall: "घंटे",
+        next: "अगला",
+        nextInQueueLabel: "कतार में अगला",
+        noOneWaiting: "कतार में कोई नहीं",
+        selectCustomerFirst: "पहले ग्राहक चुनें",
+        enterAmount: "राशि दर्ज करें",
+        enterDate: "तारीख दर्ज करें",
+        paymentMode: "भुगतान का तरीका",
+        noteOptional: "नोट (वैकल्पिक)",
+        shortNote: "छोटा नोट",
+        savePayment: "भुगतान सेव करें",
+        ownerPhone: "मालिक का फोन नंबर",
+        sendRequest: "अनुरोध भेजें",
+        noTubewellLinkedYet: "अभी तक कोई ट्यूबवेल लिंक नहीं। नीचे मालिक का नंबर डालें।",
+        waitingForApproval: "मालिक की स्वीकृति का इंतजार",
+        newLinkRequest: "नया लिंक अनुरोध",
+        wantsToConnect: " जुड़ना चाहता है",
+        linkToWhichTubewell: "किस ट्यूबवेल से लिंक करें?",
+        confirmLink: "लिंक की पुष्टि करें",
+        tubewell: "ट्यूबवेल",
+        owner: "मालिक",
+        unknownOwner: "अज्ञात मालिक",
+        unknown: "अज्ञात",
+        softDeleteFailed: "सॉफ्ट डिलीट विफल:",
+        removeAnnouncement: "घोषणा हटाएं",
+        announceRemoveConfirm: "यह सभी लिंक किए ग्राहकों से घोषणा हटा देगा।",
+        payment: "भुगतान",
+        waterBill: "पानी का बिल",
+        from: "से",
+        to: "तक",
+        period: "अवधि",
+        custom: "कस्टम",
+        today: "आज",
+        thisMonth: "इस महीने",
+        thisYear: "इस साल",
+        select: "चुनें",
+        allRecordsKept: "सभी रिकॉर्ड सर्वर पर सुरक्षित रहते हैं — नए फोन पर फिर से लॉगिन करने से डेटा वापस मिल जाता है।",
+        forOwners: "ट्यूबवेल मालिकों के लिए",
+        forCustomers: "ग्राहकों के लिए",
+        step1Owner: "ग्राहक जोड़ें",
+        step1OwnerDesc: "नाम + फोन डालें, या ग्राहक के लिंक अनुरोध को स्वीकार करें।",
+        step2Owner: "पानी शुरू/बंद",
+        step2OwnerDesc: "होम पर, पानी शुरू → ग्राहक चुनें → रेट सेट करें। बंद करने पर घंटे × रेट = बिल, बाकी भुगतान में दिखता है। ग्राहक लाइव वही रिकॉर्ड देखता है।",
+        step3Owner: "पानी का हिसाब (मैनुअल)",
+        step3OwnerDesc: "अगर पहले से पानी चल चुका हो तो समय डालकर रिकॉर्ड सेव करें।",
+        step4Owner: "+ भुगतान",
+        step4OwnerDesc: "ग्राहक विवरण में नकद/यूपीआई भुगतान दर्ज करें। इससे बही-खाता अपडेट होता है।",
+        step5Owner: "कतार",
+        step5OwnerDesc: "ग्राहक को कतार में डालें। \"अगला\" और कतार संख्या होम पर दिखती है।",
+        step6Owner: "बही-खाता",
+        step6OwnerDesc: "हर ग्राहक का पूरा लेजर (पानी + भुगतान) यहाँ सुरक्षित रहता है।",
+        step1Customer: "लिंक करें",
+        step1CustomerDesc: "मालिक का 10 अंकों का मोबाइल डालकर अनुरोध भेजें। मालिक स्वीकार करे तो ट्यूबवेल जुड़ जाएगा।",
+        step2Customer: "कतार",
+        step2CustomerDesc: "मालिक आपको कतार में डाल सकता है। \"मेरी कतार स्थिति\" पर अपनी बारी देखें।",
+        step3Customer: "पानी का उपयोग",
+        step3CustomerDesc: "जब मालिक आपके नाम पर पानी शुरू/बंद करता है, घंटे और राशि अपने-आप \"मेरा उपयोग\" में दिखती है।",
+        step4Customer: "भुगतान",
+        step4CustomerDesc: "मालिक जब भुगतान दर्ज करता है, वह \"भुगतान\" टैब में दिखता है। बाकी रकम डैशबोर्ड पर दिखती है।",
+        step5Customer: "कई मालिक",
+        step5CustomerDesc: "आप एक से अधिक ट्यूबवेल मालिक से जुड़ सकते हैं।",
+        searchCustomer: "ग्राहक खोजें...",
+        selectTubewellOption: "ट्यूबवेल चुनें",
+        primaryTubewell: "प्राथमिक ट्यूबवेल",
+        googleMapsLink: "Google Maps लिंक (वैकल्पिक)",
+        villageAddress: "गांव / पता",
+        removeTubewell: "ट्यूबवेल हटाएं",
+        save: "सेव करें",
+        enterValid10Digit: "सही 10 अंकों का फोन दर्ज करें",
+        userNotRegistered: "यह नंबर ऐप में पंजीकृत नहीं है",
+        accountDeletedCannotAdd: "यह खाता हटा दिया गया है। संपर्क में नहीं जोड़ सकते।",
+        userNotCustomer: "यह उपयोगकर्ता ग्राहक के रूप में पंजीकृत नहीं है",
+        userHasNoName: "प्रोफ़ाइल पर नाम नहीं है",
+        couldNotVerify: "नंबर जाँच नहीं हो सका",
+        customerAdded: "ग्राहक जोड़ा: ",
+        removedFromList: "सूची से हटाया। बही सुरक्षित।",
+        enterValid10DigitOwner: "सही 10 अंकों का फोन दर्ज करें",
+        enterDOBError: "कृपया जन्म तिथि दर्ज करें",
+        enterValid10DigitLogin: "सही 10 अंकों का नंबर दर्ज करें",
+        enterAllFieldsError: "सभी फील्ड भरें",
+        enterTubewellNameError: "प्राथमिक ट्यूबवेल का नाम दर्ज करें",
+        welcomeBackMsg: "वापसी का स्वागत है!",
+        wrongDOBError: "गलत जन्म तिथि। कृपया विवरण जांचें।",
+        accountDeletedOffer: "यह खाता हटा दिया गया था। क्या आप इसी नंबर से फिर पंजीकरण करना चाहते हैं?",
+        registerAgainBtn: "फिर पंजीकरण",
+        accountExistsMsg: "आपके पास पहले से {0} खाता है। क्या आप उन्हीं विवरणों से {1} प्रोफ़ाइल भी बनाना चाहते हैं?",
+        yesCreateBtn: "हाँ, बनाएं",
+        accountNotFoundMsg: "यह खाता मौजूद नहीं है। क्या आप पंजीकरण करना चाहते हैं?",
+        createNewBtn: "नया बनाएं",
+        correctDetailsBtn: "विवरण सही करें",
+        confirmDetailsMsg: "विवरण की पुष्टि करें और पंजीकरण पर टैप करें",
+        loginCancelledMsg: "लॉगिन रद्द",
+        correctDetailsMsg: "कृपया अपना विवरण सही करें",
+        nameVillageFilledMsg: "नाम और गाँव भर दिए गए। पुष्टि करके सेव करें।",
+        welcomeMsg: "स्वागत है!",
+        profileUpdatedMsg: "प्रोफाइल अपडेट हो गई!",
+        enterNameError: "नाम दर्ज करें",
+        enterValidRateError: "सही रेट दर्ज करें",
+        tubewellUpdatedMsg: "ट्यूबवेल अपडेट हो गया",
+        tubewellAddedMsg: "ट्यूबवेल जोड़ दिया गया!",
+        recordSavedMsg: "हिसाब सेव हो गया!",
+        paymentSavedMsg: "भुगतान सेव हो गया!",
+        enterAmountDateError: "राशि और तारीख दर्ज करें",
+        validAmountError: "सही राशि दर्ज करें",
+        noCustomerSelectedError: "कोई ग्राहक नहीं चुना",
+        ownerNotFoundError: "मालिक नहीं मिला",
+        notRegisteredOwnerError: "यह नंबर मालिक के रूप में पंजीकृत नहीं है",
+        cannotLinkOwnError: "आप अपने नंबर से लिंक नहीं कर सकते",
+        alreadyLinkedError: "पहले से जुड़ा हुआ है",
+        alreadyRequestedError: "अनुरोध पहले से भेजा गया है",
+        requestSentMsg: "अनुरोध भेज दिया गया! मेरा ट्यूबवेल सेक्शन देखें।",
+        unlinkConfirmMsg: "यह लिंक हटाएं? पुराना पानी इतिहास मालिक के पास रहेगा।",
+        unlinkedMsg: "हटा दिया गया",
+        requestAcceptedMsg: "अनुरोध स्वीकार!",
+        requestRejectedMsg: "अनुरोध अस्वीकार",
+        onlyOwnersSendError: "केवल मालिक घोषणा भेज सकते हैं",
+        onlyOwnersRemoveError: "केवल मालिक घोषणा हटा सकते हैं",
+        announceRemovedMsg: "घोषणा हटा दी गई",
+        announceSentMsg: "ग्राहकों को घोषणा भेज दी गई",
+        writeSomethingError: "पहले कुछ लिखें",
+        failedToSendError: "भेजने में विफल",
+        updatingAccountMsg: "खाता अपडेट हो रहा है...",
+        accessRemovedMsg: "एक्सेस हटा दिया गया। रिकॉर्ड सुरक्षित हैं।",
+        couldNotUpdateError: "खाता अपडेट नहीं हो सका",
+        completeOwnerProfileMsg: "अपना मालिक प्रोफाइल पूरा करें",
+        switchToOwnerMsg: "मालिक मोड में स्विच करें? आपका ग्राहक डेटा सुरक्षित रहेगा।",
+        continueBtn: "जारी रखें",
+        customerOnlyBtn: "केवल ग्राहक",
+        ownerOnlyBtn: "केवल मालिक",
+        bothBtn: "दोनों",
+        removeAccessBtn: "एक्सेस हटाएं",
+        historyKeptMsg: "इतिहास (बही / पानी) सुरक्षित रहेगा।",
+        whatToRemoveMsg: "क्या हटाना है?",
+        deleteRoleTitleMsg: "खाता एक्सेस हटाएं",
+        tubewellNotFoundError: "ट्यूबवेल नहीं मिला",
+        removeTubewellConfirmMsg: "यह ट्यूबवेल हटाएं? ग्राहक अनलिंक होंगे। पानी का इतिहास रहेगा।",
+        tubewellRemovedMsg: "ट्यूबवेल हटाया। ग्राहक अनलिंक। इतिहास सुरक्षित।",
+        noEntriesYetMsg: "अभी तक कोई एंट्री नहीं।",
+        totalHoursLabel: "कुल घंटे",
+        lastEntryLabel: "आखिरी एंट्री",
+        addPaymentBtn: "+ भुगतान जोड़ें",
+        addWaterBtn: "+ पानी",
+        addQueueBtn: "+ कतार",
+        historyLabel: "इतिहास",
+        myUsageLabel: "मेरा पानी उपयोग",
+        usageHistoryLabel: "उपयोग इतिहास",
+        myPaymentsLabel: "मेरे भुगतान",
+        quickTipsLabel: "त्वरित सुझाव",
+        linkTubewellTipTitle: "ट्यूबवेल लिंक करें",
+        linkTubewellDesc: "मेरा उपयोग → मालिक का नंबर डालकर अनुरोध भेजें।",
+        checkQueueTipTitle: "अपनी कतार देखें",
+        checkQueueDesc: "जब आप कतार में हों तो मेरा उपयोग पर आपकी स्थिति दिखती है।",
+        paymentsTipTitle: "भुगतान",
+        paymentsTipDesc: "भुगतान टैब के तहत बाकी और चुकाई गई राशि देखें।",
+        phoneLabel: "फोन",
+        emailLabel: "ईमेल",
+        linkedLabel: "जुड़ा हुआ",
+        unlinkThisTubewellBtn: "इस ट्यूबवेल को हटाएं",
+        currentStatusLabel: "वर्तमान स्थिति",
+        availableForUseMsg: "उपयोग के लिए उपलब्ध",
+        underMaintenanceMsg: "मरम्मत में है",
+        powerIssueNotAvailableMsg: "बिजली समस्या — उपलब्ध नहीं",
+        runningForYouMsg: "आपके लिए चालू है",
+        inUseByOtherMsg: "वर्तमान में दूसरे ग्राहक द्वारा उपयोग में है",
+        dueLabel: "बाकी",
+        paidLabel: "चुकाया",
+        hoursSmallLabel: "घंटे",
+        nextLabel: "अगला",
+        nextInQueueLabelMsg: "कतार में अगला",
+        noOneWaitingMsg: "कतार में कोई नहीं",
+        selectCustomerFirstError: "पहले ग्राहक चुनें",
+        enterAmountPlaceholder: "राशि दर्ज करें",
+        enterDateLabel: "तारीख दर्ज करें",
+        paymentModeLabel: "भुगतान का तरीका",
+        noteOptionalLabel: "नोट (वैकल्पिक)",
+        shortNotePlaceholder: "छोटा नोट",
+        savePaymentBtn: "भुगतान सेव करें",
+        ownerPhoneLabel: "मालिक का फोन नंबर",
+        sendRequestBtn: "अनुरोध भेजें",
+        noTubewellLinkedYetMsg: "अभी तक कोई ट्यूबवेल लिंक नहीं। नीचे मालिक का नंबर डालें।",
+        waitingForApprovalMsg: "मालिक की स्वीकृति का इंतजार",
+        newLinkRequestMsg: "नया लिंक अनुरोध",
+        wantsToConnectMsg: " जुड़ना चाहता है",
+        linkToWhichTubewellMsg: "किस ट्यूबवेल से लिंक करें?",
+        confirmLinkBtn: "लिंक की पुष्टि करें",
+        tubewellLabel: "ट्यूबवेल",
+        ownerLabel: "मालिक",
+        unknownOwnerMsg: "अज्ञात मालिक",
+        unknownLabel: "अज्ञात",
+        softDeleteFailedMsg: "सॉफ्ट डिलीट विफल:",
+        removeAnnouncementMsg: "घोषणा हटाएं",
+        announceRemoveConfirmMsg: "यह सभी लिंक किए ग्राहकों से घोषणा हटा देगा।",
+        paymentLabel: "भुगतान",
+        waterBillLabel: "पानी का बिल",
+        fromLabel: "से",
+        toLabel: "तक",
+        periodLabel: "अवधि",
+        customLabel: "कस्टम",
+        todayLabel: "आज",
+        thisMonthLabel: "इस महीने",
+        thisYearLabel: "इस साल",
+        selectLabel: "चुनें",
+        accountDeletedCannotAddMsg: "यह खाता हटा दिया गया है। संपर्क में नहीं जोड़ सकते।",
+        accountDeletedOfferMsg: "यह खाता हटा दिया गया था। क्या आप इसी नंबर से फिर पंजीकरण करना चाहते हैं?",
+        checkQueueTipDesc: "जब आप कतार में हों तो मेरा उपयोग पर आपकी स्थिति दिखती है।",
+        couldNotVerifyMsg: "नंबर की जाँच नहीं हो सकी",
+        customerAddedMsg: "ग्राहक जोड़ा: ",
+        enterAllFieldsErrorMsg: "सभी फील्ड भरें",
+        enterDOBErrorMsg: "कृपया जन्म तिथि दर्ज करें",
+        enterTubewellNameErrorMsg: "प्राथमिक ट्यूबवेल का नाम दर्ज करें",
+        enterValid10DigitLoginMsg: "सही 10 अंकों का नंबर दर्ज करें",
+        enterValid10DigitMsg: "सही 10 अंकों का फोन दर्ज करें",
+        enterValid10DigitOwnerMsg: "सही 10 अंकों का फोन दर्ज करें",
+
+        forCustomersLabel: "ग्राहकों के लिए",
+        forOwnersLabel: "ट्यूबवेल मालिकों के लिए",
+
+        googleMapsLinkLabel: "Google Maps लिंक (वैकल्पिक)",
+        linkTubewellTipDesc: "मेरा उपयोग → मालिक का नंबर डालकर अनुरोध भेजें।",
+
+        primaryTubewellLabel: "प्राथमिक ट्यूबवेल",
+        removeTubewellLabel: "ट्यूबवेल हटाएं",
+        removedFromListMsg: "सूची से हटा दिया गया। बही सुरक्षित है।",
+        saveLabel: "सेव करें",
+
+        searchCustomerPlaceholder: "ग्राहक खोजें...",
+        selectTubewellOptionLabel: "ट्यूबवेल चुनें",
+
+        step1CustomerTitle: "लिंक करें",
+        step1OwnerTitle: "ग्राहक जोड़ें",
+
+        step2CustomerTitle: "कतार",
+        step2OwnerTitle: "पानी शुरू / बंद",
+
+        step3CustomerTitle: "पानी का उपयोग",
+        step3OwnerTitle: "पानी का हिसाब (मैनुअल)",
+
+        step4CustomerTitle: "भुगतान",
+        step4OwnerTitle: "+ भुगतान",
+
+        step5CustomerTitle: "कई मालिक",
+        step5OwnerTitle: "कतार",
+
+        step6OwnerTitle: "बही-खाता",
+
+        userHasNoNameMsg: "प्रोफ़ाइल पर उपयोगकर्ता का नाम नहीं है",
+        userNotCustomerMsg: "यह उपयोगकर्ता ग्राहक के रूप में पंजीकृत नहीं है",
+        userNotRegisteredMsg: "यह नंबर ऐप में पंजीकृत नहीं है",
+
+        villageAddressLabel: "गांव / पता",
+        wrongDOBErrorMsg: "गलत जन्म तिथि। कृपया विवरण जांचें।",
+        allRecordsKeptMsg: "सभी रिकॉर्ड सर्वर पर सुरक्षित रहते हैं — नए फोन पर फिर से लॉगिन करने से आपका डेटा वापस मिल जाएगा।",
+
+        welcomeBackMsg2: "वापसी का स्वागत है!",
+        registerAgainBtn2: "फिर से पंजीकरण करें",
+        accountExistsMsg2: "आपके पास पहले से {0} खाता है। क्या आप उन्हीं विवरणों से {1} प्रोफ़ाइल भी बनाना चाहते हैं?",
+        yesCreateBtn2: "हाँ, बनाएं",
+        accountNotFoundMsg2: "यह खाता मौजूद नहीं है। क्या आप अपना पंजीकरण करना चाहते हैं?",
+        createNewBtn2: "नया बनाएं",
+        correctDetailsBtn2: "विवरण सही करें",
+        confirmDetailsMsg2: "विवरण की पुष्टि करें और पंजीकरण पर टैप करें",
+        loginCancelledMsg2: "लॉगिन रद्द किया गया",
+        correctDetailsMsg2: "कृपया अपना विवरण सही करें",
+        nameVillageFilledMsg2: "नाम और गाँव भर दिए गए हैं। पुष्टि करके सेव करें।",
+        welcomeMsg2: "स्वागत है!",
+        profileUpdatedMsg2: "प्रोफाइल अपडेट हो गई!",
+        enterNameError2: "नाम दर्ज करें",
+        enterValidRateError2: "सही रेट दर्ज करें",
+        tubewellUpdatedMsg2: "ट्यूबवेल अपडेट हो गया",
+        tubewellAddedMsg2: "ट्यूबवेल जोड़ दिया गया!",
+        recordSavedMsg2: "हिसाब सेव हो गया!",
+        paymentSavedMsg2: "भुगतान सेव हो गया!",
+        enterAmountDateError2: "राशि और तारीख दर्ज करें",
+        validAmountError2: "सही राशि दर्ज करें",
+        noCustomerSelectedError2: "कोई ग्राहक नहीं चुना गया",
+        ownerNotFoundError2: "मालिक नहीं मिला",
+        notRegisteredOwnerError2: "यह नंबर मालिक के रूप में पंजीकृत नहीं है",
+        cannotLinkOwnError2: "आप अपने नंबर से लिंक नहीं कर सकते",
+        alreadyLinkedError2: "पहले से जुड़ा हुआ है",
+        alreadyRequestedError2: "अनुरोध पहले से भेजा जा चुका है",
+        requestSentMsg2: "अनुरोध भेज दिया गया! मेरा ट्यूबवेल सेक्शन देखें।",
+        unlinkConfirmMsg2: "यह लिंक हटाएं? आपका पुराना पानी का इतिहास मालिक के पास सुरक्षित रहेगा।",
+        unlinkedMsg2: "लिंक हटा दिया गया",
+        requestAcceptedMsg2: "अनुरोध स्वीकार किया गया!",
+        requestRejectedMsg2: "अनुरोध अस्वीकार किया गया",
+        onlyOwnersSendError2: "केवल मालिक ही घोषणा भेज सकते हैं",
+        onlyOwnersRemoveError2: "केवल मालिक ही घोषणा हटा सकते हैं",
+        announceRemovedMsg2: "घोषणा हटा दी गई",
+        announceSentMsg2: "ग्राहकों को घोषणा भेज दी गई",
+        writeSomethingError2: "पहले कुछ लिखें",
+        failedToSendError2: "भेजने में विफल",
+        updatingAccountMsg2: "खाता अपडेट हो रहा है...",
+        accessRemovedMsg2: "एक्सेस हटा दिया गया। रिकॉर्ड सुरक्षित हैं।",
+        couldNotUpdateError2: "खाता अपडेट नहीं हो सका",
+        completeOwnerProfileMsg2: "अपना मालिक प्रोफाइल पूरा करें",
+        switchToOwnerMsg2: "मालिक मोड में स्विच करें? आपका ग्राहक डेटा सुरक्षित रहेगा।",
+        continueBtn2: "जारी रखें",
+        customerOnlyBtn2: "केवल ग्राहक",
+        ownerOnlyBtn2: "केवल मालिक",
+        bothBtn2: "दोनों",
+        removeAccessBtn2: "एक्सेस हटाएं",
+        historyKeptMsg2: "इतिहास (बही / पानी) सुरक्षित रहेगा।",
+        whatToRemoveMsg2: "क्या हटाना है?",
+        deleteRoleTitleMsg2: "खाता एक्सेस हटाएं",
+        tubewellNotFoundError2: "ट्यूबवेल नहीं मिला",
+        removeTubewellConfirmMsg2: "यह ट्यूबवेल हटाएं? ग्राहक अनलिंक हो जाएंगे। पानी का इतिहास सुरक्षित रहेगा।",
+        tubewellRemovedMsg2: "ट्यूबवेल हटा दिया गया। ग्राहक अनलिंक हो गए। इतिहास सुरक्षित है।",
+        noEntriesYetMsg2: "अभी तक कोई एंट्री नहीं।",
+        totalHoursLabel2: "कुल घंटे",
+        lastEntryLabel2: "आखिरी एंट्री",
+        addPaymentBtn2: "+ भुगतान जोड़ें",
+        addWaterBtn2: "+ पानी",
+        addQueueBtn2: "+ कतार",
+        historyLabel2: "इतिहास",
+        myUsageLabel2: "मेरा पानी उपयोग",
+        usageHistoryLabel2: "उपयोग इतिहास",
+        myPaymentsLabel2: "मेरे भुगतान",
+        quickTipsLabel2: "त्वरित सुझाव",
+        linkTubewellTipTitle2: "ट्यूबवेल लिंक करें",
+        linkTubewellTipDesc2: "मेरा उपयोग → मालिक का नंबर डालकर लिंक अनुरोध भेजें।",
+        checkQueueTipTitle2: "अपनी कतार देखें",
+        checkQueueTipDesc2: "जब आप कतार में हों तो मेरा उपयोग में आपकी स्थिति दिखाई देती है।",
+        paymentsTipTitle2: "भुगतान",
+        paymentsTipDesc2: "भुगतान टैब के तहत बाकी और चुकाई गई राशि देखें।",
+        phoneLabel2: "फोन",
+        emailLabel2: "ईमेल",
+        linkedLabel2: "जुड़ा हुआ",
+        unlinkThisTubewellBtn2: "इस ट्यूबवेल को अनलिंक करें",
+        currentStatusLabel2: "वर्तमान स्थिति",
+        availableForUseMsg2: "उपयोग के लिए उपलब्ध",
+        underMaintenanceMsg2: "मरम्मत में है",
+        powerIssueNotAvailableMsg2: "बिजली समस्या — उपलब्ध नहीं",
+        runningForYouMsg2: "आपके लिए चालू है",
+        inUseByOtherMsg2: "वर्तमान में दूसरे ग्राहक द्वारा उपयोग में है",
+        dueLabel2: "बाकी",
+        paidLabel2: "चुकाया गया",
+        hoursSmallLabel2: "घंटे",
+        nextLabel2: "अगला",
+        nextInQueueLabelMsg2: "कतार में अगला",
+        noOneWaitingMsg2: "कतार में कोई इंतजार नहीं कर रहा",
+        selectCustomerFirstError2: "पहले ग्राहक चुनें",
+        enterAmountPlaceholder2: "राशि दर्ज करें",
+        enterDateLabel2: "तारीख दर्ज करें",
+        paymentModeLabel2: "भुगतान का तरीका",
+        noteOptionalLabel2: "नोट (वैकल्पिक)",
+        shortNotePlaceholder2: "छोटा नोट",
+        savePaymentBtn2: "भुगतान सेव करें",
+        ownerPhoneLabel2: "मालिक का फोन नंबर",
+        sendRequestBtn2: "अनुरोध भेजें",
+        noTubewellLinkedYetMsg2: "अभी तक कोई ट्यूबवेल लिंक नहीं है। नीचे मालिक का नंबर डालें।",
+        waitingForApprovalMsg2: "मालिक की स्वीकृति का इंतजार",
+        newLinkRequestMsg2: "नया लिंक अनुरोध",
+        wantsToConnectMsg2: " जुड़ना चाहता है",
+        linkToWhichTubewellMsg2: "किस ट्यूबवेल से लिंक करें?",
+        confirmLinkBtn2: "लिंक की पुष्टि करें",
+        tubewellLabel2: "ट्यूबवेल",
+        ownerLabel2: "मालिक",
+        unknownOwnerMsg2: "अज्ञात मालिक",
+        unknownLabel2: "अज्ञात",
+        softDeleteFailedMsg2: "सॉफ्ट डिलीट विफल:",
+        removeAnnouncementMsg2: "घोषणा हटाएं",
+        announceRemoveConfirmMsg2: "यह सभी लिंक किए गए ग्राहकों के लिए घोषणा हटा देगा।",
+        paymentLabel2: "भुगतान",
+        waterBillLabel2: "पानी का बिल",
+        fromLabel2: "से",
+        toLabel2: "तक",
+        periodLabel2: "अवधि",
+        customLabel2: "कस्टम",
+        todayLabel2: "आज",
+        thisMonthLabel2: "इस महीने",
+        thisYearLabel2: "इस साल",
+        selectLabel2: "चुनें",
+        allRecordsKeptMsg2: "सभी रिकॉर्ड सर्वर पर सुरक्षित रहते हैं — नए फोन पर फिर से लॉगिन करने से आपका डेटा वापस मिल जाएगा।",
+        forOwnersLabel2: "ट्यूबवेल मालिकों के लिए",
+        forCustomersLabel2: "ग्राहकों के लिए",
+        step1OwnerTitle2: "ग्राहक जोड़ें",
+        step1OwnerDesc2: "नाम + फोन डालें, या ग्राहक के लिंक अनुरोध को स्वीकार करें।",
+        step2OwnerTitle2: "पानी शुरू / बंद करें",
+        step2OwnerDesc2: "होम पर, पानी शुरू करें → ग्राहक चुनें → रेट सेट करें। बंद करने पर घंटे × रेट = बिल, जो बाकी भुगतान में दिखता है। ग्राहक वही रिकॉर्ड लाइव देखता है।",
+        step3OwnerTitle2: "पानी का हिसाब (मैनुअल)",
+        step3OwnerDesc2: "अगर पहले से पानी चल चुका हो तो शुरू और बंद होने का समय डालकर लाइव टाइमर के बिना रिकॉर्ड सेव करें।",
+        step4OwnerTitle2: "+ भुगतान",
+        step4OwnerDesc2: "ग्राहक के विवरण पेज पर नकद/यूपीआई प्राप्त भुगतान दर्ज करें। इससे आप दोनों की बही-खाता अपडेट होती है।",
+        step5OwnerTitle2: "कतार",
+        step5OwnerDesc2: "ग्राहकों को कतार में जोड़ें। \"कतार में अगला\" और कतार की संख्या होम पर दिखाई देती है।",
+        step6OwnerTitle2: "बही-खाता",
+        step6OwnerDesc2: "हर ग्राहक की पूरी बही (पानी + भुगतान) यहाँ सुरक्षित रहती है, भले ही वे बाद में अनलिंक हो जाएं।",
+        step1CustomerTitle2: "लिंक करें",
+        step1CustomerDesc2: "मालिक का 10 अंकों का मोबाइल नंबर डालकर अनुरोध भेजें। मालिक के स्वीकार करने पर ट्यूबवेल लिंक हो जाएगा।",
+        step2CustomerTitle2: "कतार",
+        step2CustomerDesc2: "मालिक आपको कतार में डाल सकता है। मेरा उपयोग में \"मेरी कतार में स्थिति\" देखें।",
+        step3CustomerTitle2: "पानी का उपयोग",
+        step3CustomerDesc2: "जब मालिक आपके नाम पर पानी शुरू/बंद करता है, तो घंटे और राशि अपने-आप मेरा उपयोग में दिखाई देती है।",
+        step4CustomerTitle2: "भुगतान",
+        step4CustomerDesc2: "जब मालिक भुगतान दर्ज करता है, तो वह भुगतान टैब में दिखाई देता है। बाकी राशि आपके डैशबोर्ड पर दिखाई देती है।",
+        step5CustomerTitle2: "कई मालिक",
+        step5CustomerDesc2: "आप एक से अधिक ट्यूबवेल मालिकों से लिंक कर सकते हैं।",
+        searchCustomerPlaceholder2: "ग्राहक खोजें...",
+        selectTubewellOptionLabel2: "ट्यूबवेल चुनें",
+        primaryTubewellLabel2: "प्राथमिक ट्यूबवेल",
+        googleMapsLinkLabel2: "Google Maps लिंक (वैकल्पिक)",
+        villageAddressLabel2: "गांव / पता",
+        removeTubewellLabel2: "ट्यूबवेल हटाएं",
+        saveLabel2: "सेव करें",
     }
-};
+}
 
 function setLanguage(lang) {
     currentLang = lang;
@@ -3912,6 +5218,7 @@ document.getElementById('save-water-btn').addEventListener('click', async () => 
             rate: rate,
             amount: amount,
             status: 'pending',
+            approval_status: 'awaiting_approval',
             type: 'water',
             date: today,
             created_at: safeServerTimestamp(),
@@ -3933,11 +5240,31 @@ document.getElementById('save-water-btn').addEventListener('click', async () => 
 
         const custHistory = JSON.parse(localStorage.getItem('customer_history') || '{}');
         if (!custHistory[customerId]) custHistory[customerId] = [];
-        custHistory[customerId].push({ type: 'water', date: today, start: timeStart.value, end: timeEnd.value, duration, rate, amount, status: 'pending' });
+        custHistory[customerId].push({
+            id: docRef.id,
+            type: 'water',
+            date: today,
+            start: timeStart.value,
+            end: timeEnd.value,
+            duration,
+            rate,
+            amount,
+            status: 'pending'
+        });
         localStorage.setItem('customer_history', JSON.stringify(custHistory));
 
         if (!customerData[customerId]) customerData[customerId] = { name: cust.name || '', phone: cust.phone || '', history: [] };
-        customerData[customerId].history.push({ type: 'water', date: today, start: timeStart.value, end: timeEnd.value, duration, rate, amount, status: 'pending' });
+        customerData[customerId].history.push({
+            id: docRef.id,
+            type: 'water',
+            date: today,
+            start: timeStart.value,
+            end: timeEnd.value,
+            duration,
+            rate,
+            amount,
+            status: 'pending'
+        });
 
         updateDashboardStats();
         renderPendingPayments();
@@ -4093,42 +5420,33 @@ function cleanupCustomerData() {
 
 window.openCustomerDetail = async function (id) {
     window.currentCustomerId = id;
-
-    // Resolve fresh name from server first
     const listCust = getCustomerById(id) || {};
     let displayName = listCust.name || (customerData[id] && customerData[id].name) || 'Customer';
+    const accountDeleted = listCust.accountDeleted === true;
 
     if (listCust.customerUid) {
         try {
             const uDoc = await getDoc(doc(db, 'users', listCust.customerUid));
             if (uDoc.exists() && uDoc.data().accountStatus !== 'deleted') {
                 displayName = uDoc.data().name || displayName;
-                // Update local cache
                 if (customerData[id]) customerData[id].name = displayName;
             }
         } catch (e) { }
     }
 
-    // Disable / enable action buttons on detail view
     const detailView = document.getElementById('view-customer-detail');
     if (detailView) {
         const btns = detailView.querySelectorAll('button');
         btns.forEach(btn => {
             const t = (btn.innerText || btn.textContent || '').toLowerCase();
-            const isAction =
-                t.indexOf('payment') >= 0 ||
-                t.indexOf('water') >= 0 ||
-                t.indexOf('queue') >= 0 ||
-                t.indexOf('भुगतान') >= 0 ||
-                t.indexOf('पानी') >= 0 ||
-                t.indexOf('कतार') >= 0;
+            const isAction = t.indexOf('payment') >= 0 || t.indexOf('water') >= 0 || t.indexOf('queue') >= 0 ||
+                t.indexOf('भुगतान') >= 0 || t.indexOf('पानी') >= 0 || t.indexOf('कतार') >= 0;
             if (isAction) {
                 btn.disabled = accountDeleted;
                 btn.style.opacity = accountDeleted ? '0.45' : '1';
                 btn.style.pointerEvents = accountDeleted ? 'none' : '';
             }
         });
-        // Optional banner
         let ban = document.getElementById('cust-deleted-banner');
         if (accountDeleted) {
             if (!ban) {
@@ -4136,9 +5454,7 @@ window.openCustomerDetail = async function (id) {
                 ban.id = 'cust-deleted-banner';
                 ban.style.cssText = 'padding:10px 12px;margin-bottom:12px;border-radius:10px;background:rgba(255,59,48,0.12);color:var(--ios-red);font-size:13px;';
                 const nameEl = document.getElementById('customer-detail-name');
-                if (nameEl && nameEl.parentNode) {
-                    nameEl.parentNode.insertBefore(ban, nameEl.nextSibling);
-                }
+                if (nameEl && nameEl.parentNode) nameEl.parentNode.insertBefore(ban, nameEl.nextSibling);
             }
             ban.innerText = currentLang === 'en'
                 ? 'This customer deleted their account. \n History only can be visible. Other actions are disabled.'
@@ -4148,6 +5464,7 @@ window.openCustomerDetail = async function (id) {
             ban.style.display = 'none';
         }
     }
+
     const cust = customerData[id];
     if (!cust) {
         const customers = getCustomers();
@@ -4158,6 +5475,10 @@ window.openCustomerDetail = async function (id) {
             return;
         }
     }
+
+    // Sync from server to get latest approval_status
+    await syncOwnerUsageFromServer();
+
     const historyList = document.getElementById('customer-history-list');
     const allHistory = customerData[id].history || [];
     document.getElementById('customer-detail-name').innerText = customerData[id].name;
@@ -4187,15 +5508,48 @@ window.openCustomerDetail = async function (id) {
             const partialDue = partial.get(wkey) || 0;
             if (!isSettled) totalDue += entry.amount || 0;
             const displayAmount = partialDue > 0 ? partialDue : entry.amount;
+
+            // Approval status handling
+            const approvalStatus = entry.approval_status || 'awaiting_approval';
+            let approvalBadge = '';
+            let editButton = '';
+
+            if (approvalStatus === 'awaiting_approval') {
+                approvalBadge = '<span style="font-size:11px;color:var(--ios-orange);background:rgba(255,149,0,0.12);padding:2px 8px;border-radius:6px;margin-left:8px;">' +
+                    (currentLang === 'en' ? 'Waiting for customer approval' : 'ग्राहक की स्वीकृति का इंतजार') + '</span>';
+                editButton = '<button class="btn-small" style="margin-top:6px;background:var(--ios-blue);" onclick="openEditWaterModal(\'' + (entry.id || '') + '\')">' +
+                    (currentLang === 'en' ? 'Edit' : 'एडिट') + '</button>';
+            } else if (approvalStatus === 'approved') {
+                approvalBadge = '<span style="font-size:11px;color:var(--ios-green);background:rgba(52,199,89,0.12);padding:2px 8px;border-radius:6px;margin-left:8px;">' +
+                    (currentLang === 'en' ? 'Approved' : 'स्वीकृत') + '</span>';
+            } else if (approvalStatus === 'rejected') {
+                approvalBadge = '<span style="font-size:11px;color:var(--ios-red);background:rgba(255,59,48,0.12);padding:2px 8px;border-radius:6px;margin-left:8px;">' +
+                    (currentLang === 'en' ? 'Customer Rejected' : 'ग्राहक ने अस्वीकार किया') + '</span>';
+                editButton = '<button class="btn-small" style="margin-top:6px;background:var(--ios-blue);" onclick="openEditWaterModal(\'' + (entry.id || '') + '\')">' +
+                    (currentLang === 'en' ? 'Edit' : 'एडिट') + '</button>';
+            }
+
             const statusLabel = isSettled ? 'paid' : (partialDue > 0 ? 'partial' : 'pending');
             const statusColor = isSettled ? 'text-green' : (partialDue > 0 ? 'text-orange' : 'text-red');
-            return '<div class="list-item"><div class="item-info"><h4>Water Usage</h4><p>' + entry.date + ' • ' + entry.start + ' - ' + entry.end + ' • ' + entry.duration + ' hrs</p></div><div style="text-align: right;"><div class="item-value ' + statusColor + '">₹' + displayAmount + '</div><span style="font-size: 11px; color: var(--ios-gray); text-transform: uppercase;">' + statusLabel + '</span></div></div>';
+
+            return '<div class="list-item" style="flex-direction:column;align-items:flex-start;gap:6px;">' +
+                '<div style="display:flex;justify-content:space-between;width:100%;">' +
+                '<div class="item-info">' +
+                '<h4>Water Usage' + approvalBadge + '</h4>' +
+                '<p>' + entry.date + ' • ' + entry.start + ' - ' + entry.end + ' • ' + entry.duration + ' hrs</p>' +
+                '</div>' +
+                '<div style="text-align:right;">' +
+                '<div class="item-value ' + statusColor + '">₹' + displayAmount + '</div>' +
+                '<span style="font-size: 11px; color: var(--ios-gray); text-transform: uppercase;">' + statusLabel + '</span>' +
+                '</div>' +
+                '</div>' +
+                editButton +
+                '</div>';
         } else {
             totalPaid += entry.amount || 0;
             if (idx === 0) lastEntry = entry.date;
             const modeLabel = entry.mode || 'Cash';
-            const notePart = entry.note ? ' · ' + entry.note : '';
-            return '<div class="list-item"><div class="item-info"><h4>Payment · ' + modeLabel + '</h4><p' + entry.date + '</p>' + (entry.note ? '<p style="font-size:12px;color:var(--ios-gray);margin-top:2px;">' + entry.note + '</p>' : '') + '</div><div class="item-value text-green">-₹' + entry.amount + '</div></div>';
+            return '<div class="list-item"><div class="item-info"><h4>Payment · ' + modeLabel + '</h4><p>' + entry.date + '</p>' + (entry.note ? '<p style="font-size:12px;color:var(--ios-gray);margin-top:2px;">' + entry.note + '</p>' : '') + '</div><div class="item-value text-green">-₹' + entry.amount + '</div></div>';
         }
     }).join('');
 
@@ -4204,6 +5558,233 @@ window.openCustomerDetail = async function (id) {
     document.getElementById('cust-total-hours').innerHTML = totalHours.toFixed(1) + ' <small>Hrs</small>';
     document.getElementById('cust-last-entry').innerText = lastEntry;
     showView('view-customer-detail');
+};
+
+window.openEditWaterModal = async function (entryId) {
+    if (!entryId) {
+        showToast(
+            currentLang === 'en' ? 'Entry not found' : 'एंट्री नहीं मिली',
+            'error'
+        );
+        return;
+    }
+
+    let entry = null;
+
+    // -------------------------------------------------
+    // 1. First check owner's local water history
+    // -------------------------------------------------
+    const waterHistory = getWaterHistory();
+
+    entry = waterHistory.find(
+        h => String(h.id) === String(entryId)
+    );
+
+    // -------------------------------------------------
+    // 2. If not found, check current customer's history
+    // -------------------------------------------------
+    if (!entry && window.currentCustomerId) {
+        const cust = customerData[window.currentCustomerId];
+
+        if (cust && Array.isArray(cust.history)) {
+            entry = cust.history.find(
+                h => String(h.id) === String(entryId)
+            );
+        }
+    }
+
+    // -------------------------------------------------
+    // 3. If still not found, check customer_history
+    // -------------------------------------------------
+    if (!entry) {
+        const customerHistory = JSON.parse(
+            localStorage.getItem('customer_history') || '{}'
+        );
+
+        for (const cid of Object.keys(customerHistory)) {
+            const history = customerHistory[cid];
+
+            if (!Array.isArray(history)) continue;
+
+            const found = history.find(
+                h => String(h.id) === String(entryId)
+            );
+
+            if (found) {
+                entry = found;
+                break;
+            }
+        }
+    }
+
+    // -------------------------------------------------
+    // 4. Final source of truth: Firestore
+    // -------------------------------------------------
+    if (!entry) {
+        try {
+            const usageDoc = await getDoc(
+                doc(db, 'water_usage', entryId)
+            );
+
+            if (usageDoc.exists()) {
+                const data = usageDoc.data();
+
+                entry = {
+                    id: usageDoc.id,
+                    type: 'water',
+                    date: data.date || '',
+                    start: data.start_time || '',
+                    end: data.end_time || '',
+                    duration: data.duration || 0,
+                    rate: data.rate || 0,
+                    amount: data.amount || 0,
+                    status: data.status || 'pending',
+                    approval_status:
+                        data.approval_status || 'awaiting_approval'
+                };
+            }
+        } catch (error) {
+            console.error(
+                'openEditWaterModal Firestore lookup failed:',
+                error
+            );
+        }
+    }
+
+    // -------------------------------------------------
+    // 5. Still not found = genuinely missing
+    // -------------------------------------------------
+    if (!entry) {
+        console.error(
+            'Water usage entry not found:',
+            entryId
+        );
+
+        showToast(
+            currentLang === 'en'
+                ? 'Entry not found'
+                : 'एंट्री नहीं मिली',
+            'error'
+        );
+
+        return;
+    }
+
+    // -------------------------------------------------
+    // 6. Fill edit modal
+    // -------------------------------------------------
+    const idEl = document.getElementById('edit-water-id');
+    const dateEl = document.getElementById('edit-water-date');
+    const startEl = document.getElementById('edit-water-start');
+    const endEl = document.getElementById('edit-water-end');
+    const durationEl = document.getElementById('edit-water-duration');
+    const rateEl = document.getElementById('edit-water-rate');
+    const amountEl = document.getElementById('edit-water-amount');
+
+    if (idEl) idEl.value = entryId;
+    if (dateEl) dateEl.value = entry.date || '';
+    if (startEl) startEl.value = entry.start || entry.start_time || '';
+    if (endEl) endEl.value = entry.end || entry.end_time || '';
+    if (durationEl) durationEl.value = entry.duration || '';
+    if (rateEl) rateEl.value = entry.rate || '';
+
+    if (amountEl) {
+        amountEl.innerText = '₹' + (entry.amount || 0);
+    }
+
+    openModal('edit-water-modal');
+};
+window.calculateEditWater = function () {
+    const duration = parseFloat(document.getElementById('edit-water-duration').value) || 0;
+    const rate = parseFloat(document.getElementById('edit-water-rate').value) || 0;
+    const amount = Math.round(duration * rate);
+    document.getElementById('edit-water-amount').innerText = '₹' + amount;
+};
+
+window.saveEditWater = async function () {
+    const entryId = document.getElementById('edit-water-id').value;
+    if (!entryId) return;
+
+    const date = document.getElementById('edit-water-date').value;
+    const start = document.getElementById('edit-water-start').value;
+    const end = document.getElementById('edit-water-end').value;
+    const duration = parseFloat(document.getElementById('edit-water-duration').value) || 0;
+    const rate = parseFloat(document.getElementById('edit-water-rate').value) || 0;
+    const amount = Math.round(duration * rate);
+
+    if (!date || !start || !end || duration <= 0 || rate <= 0) {
+        showToast(currentLang === 'en' ? 'Please fill all fields correctly' : 'सभी फील्ड सही भरें', 'error');
+        return;
+    }
+
+    try {
+        // Update in Firestore
+        await safeUpdateDoc(doc(db, 'water_usage', entryId), {
+            date: date,
+            start_time: start,
+            end_time: end,
+            duration: duration,
+            rate: rate,
+            amount: amount,
+            approval_status: 'awaiting_approval',
+            edited_at: safeServerTimestamp(),
+            edited_by: localStorage.getItem('user_uid')
+        });
+
+        // Update local history
+        const history = getWaterHistory();
+        const idx = history.findIndex(h => h.id === entryId);
+        if (idx >= 0) {
+            history[idx].date = date;
+            history[idx].start = start;
+            history[idx].end = end;
+            history[idx].duration = duration;
+            history[idx].rate = rate;
+            history[idx].amount = amount;
+            history[idx].approval_status = 'awaiting_approval';
+            saveWaterHistory(history);
+        }
+
+        // Update customer history
+        const custHistory = JSON.parse(localStorage.getItem('customer_history') || '{}');
+        Object.keys(custHistory).forEach(cid => {
+            const eidx = custHistory[cid].findIndex(e => e.id === entryId);
+            if (eidx >= 0) {
+                custHistory[cid][eidx].date = date;
+                custHistory[cid][eidx].start = start;
+                custHistory[cid][eidx].end = end;
+                custHistory[cid][eidx].duration = duration;
+                custHistory[cid][eidx].rate = rate;
+                custHistory[cid][eidx].amount = amount;
+                custHistory[cid][eidx].approval_status = 'awaiting_approval';
+            }
+        });
+        localStorage.setItem('customer_history', JSON.stringify(custHistory));
+
+        if (customerData[window.currentCustomerId]) {
+            const ch = customerData[window.currentCustomerId].history || [];
+            const eidx = ch.findIndex(e => e.id === entryId);
+            if (eidx >= 0) {
+                ch[eidx].date = date;
+                ch[eidx].start = start;
+                ch[eidx].end = end;
+                ch[eidx].duration = duration;
+                ch[eidx].rate = rate;
+                ch[eidx].amount = amount;
+                ch[eidx].approval_status = 'awaiting_approval';
+            }
+        }
+
+        closeModal('edit-water-modal');
+        openCustomerDetail(window.currentCustomerId);
+        updateDashboardStats();
+        renderPendingPayments();
+        showToast(currentLang === 'en' ? 'Updated and sent for approval' : 'अपडेट करके स्वीकृति के लिए भेजा गया', 'success');
+
+    } catch (e) {
+        console.error('saveEditWater failed', e);
+        showToast(currentLang === 'en' ? 'Update failed' : 'अपडेट विफल', 'error');
+    }
 };
 
 window.showView = function (viewId) {

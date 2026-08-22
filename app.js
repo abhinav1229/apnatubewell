@@ -1658,6 +1658,14 @@ window.renderMyTubewell = async function () {
                 '</p>';
         }
 
+        const mapLink = twData.mapLink || '';
+        const mapBlock = mapLink
+            ? ('<button class="btn-primary" style="width:100%;margin-top:8px;" onclick="openTubewellMap(\'' +
+                String(mapLink).replace(/'/g, "\\'") + '\')">' +
+                (currentLang === 'en' ? 'Open in Google Maps' : 'Google Maps में खोलें') +
+                '</button>')
+            : '';
+
         html +=
             '<div class="list-item" style="flex-direction: column; align-items: flex-start; gap: 8px;">' +
             '<div style="display: flex; justify-content: space-between; width: 100%; align-items: center;">' +
@@ -1680,6 +1688,7 @@ window.renderMyTubewell = async function () {
             '<button class="btn-ghost mt-2" onclick="unlinkTubewellByOwner(\'' + ownerUid + '\')" style="width:100%; color:var(--ios-red); font-size: 13px; padding: 8px;">' +
             (currentLang === 'en' ? 'Unlink this tubewell' : 'इस ट्यूबवेल को हटाएं') +
             '</button>' +
+            mapBlock +
             '</div>';
     }
 
@@ -3591,7 +3600,7 @@ function renderTubewells() {
 
     const primary = getTubewellData();
     const extras = JSON.parse(localStorage.getItem('tubewell_extras') || '[]');
-    const all = primary.name ? [primary].concat(extras) : extras;
+    const all = (primary.name && !primary.removed) ? [primary].concat(extras) : extras;
 
     const twSelect = document.getElementById('new-customer-tubewell');
     if (twSelect) {
@@ -3627,13 +3636,23 @@ function renderTubewells() {
 
         const key = (primary.name && i === 0) ? 'primary' : ('extra_' + (primary.name ? i - 1 : i));
 
+        const mapBtn = tw.mapLink
+            ? '<button class="btn-small" style="margin-top: 5px;" onclick="event.stopPropagation(); openTubewellMap(\'' +
+            String(tw.mapLink).replace(/'/g, "\\'") + '\')">Map</button>'
+            : '';
+
         return '<div class="list-item" style="cursor:pointer;" onclick="openEditTubewell(\'' + key + '\')">' +
             '<div class="item-info"><h4>' + (tw.name || '') + '</h4>' +
             '<p>' + (tw.location || '') + ' • ₹' + (tw.rate || '') + '/hr</p>' +
-            '<p style="font-size:12px; color:' + statusColor + '; margin-top:2px;">' + statusText + '</p></div>' +
+            '<p style="font-size:12px; color:' + statusColor + '; margin-top:2px;">' + statusText + '<p>' + mapBtn + '</p>' + '</p></div>' +
             '<span class="role-badge">' + (key === 'primary' ? 'PRIMARY' : 'ACTIVE') + '</span></div>';
     }).join('');
 }
+
+window.openTubewellMap = function (url) {
+    if (!url) return;
+    window.open(url, '_blank', 'noopener,noreferrer');
+};
 
 window.addNewTubewell = async function () {
     const name = document.getElementById('new-tw-name').value.trim();
@@ -4242,6 +4261,9 @@ window.openEditTubewell = function (key) {
     document.getElementById('edit-tw-rate').value = tw.rate != null ? tw.rate : 150;
     document.getElementById('edit-tw-location').value = tw.location || '';
 
+    const mapEl = document.getElementById('edit-tw-map');
+    if (mapEl) mapEl.value = tw.mapLink || tw.googleMap || '';
+
     openModal('edit-tubewell-modal');
 };
 
@@ -4250,6 +4272,7 @@ window.saveEditTubewell = async function () {
     const name = document.getElementById('edit-tw-name').value.trim();
     const rate = parseFloat(document.getElementById('edit-tw-rate').value) || 0;
     const location = document.getElementById('edit-tw-location').value.trim();
+    const mapLink = (document.getElementById('edit-tw-map') || {}).value.trim() || '';
 
     if (!name) {
         showToast(currentLang === 'en' ? 'Enter name' : 'नाम दर्ज करें', 'error');
@@ -4267,13 +4290,15 @@ window.saveEditTubewell = async function () {
         tw.name = name;
         tw.rate = rate;
         tw.location = location;
+        tw.mapLink = mapLink;
         saveTubewellData(tw);
 
         try {
             await safeUpdateDoc(doc(db, 'tubewells', ownerUid + '_primary'), {
                 name: name,
                 rate: rate,
-                location: location
+                location: location,
+                mapLink: mapLink
             });
         } catch (e) {
             // create if missing
@@ -4306,6 +4331,119 @@ window.saveEditTubewell = async function () {
     if (typeof renderStatusCard === 'function') renderStatusCard();
     showToast(currentLang === 'en' ? 'Tubewell updated' : 'ट्यूबवेल अपडेट हो गया', 'success');
 };
+
+window.removeTubewellFromEdit = function () {
+    const key = (document.getElementById('edit-tw-key') || {}).value || 'primary';
+    showConfirmPopup(
+        currentLang === 'en' ? 'Remove tubewell' : 'ट्यूबवेल हटाएं',
+        currentLang === 'en'
+            ? 'Remove this tubewell? Customers will be unlinked. Water history will be kept.'
+            : 'यह ट्यूबवेल हटाएं? ग्राहक अनलिंक होंगे। पानी का इतिहास रहेगा।',
+        currentLang === 'en' ? 'Remove' : 'हटाएं',
+        currentLang === 'en' ? 'Cancel' : 'रद्द करें',
+        function () { proceedRemoveTubewell(key); },
+        null
+    );
+};
+
+async function proceedRemoveTubewell(key) {
+    const ownerUid = localStorage.getItem('user_uid');
+    if (!ownerUid) return;
+
+    try {
+        if (key === 'primary') {
+            // Soft-remove primary: mark inactive, clear live status (do NOT delete water_usage)
+            const tw = getTubewellData() || {};
+            const cleared = {
+                name: '',
+                location: '',
+                rate: tw.rate || 150,
+                mapLink: '',
+                status: 'stopped',
+                currentCustomer: null,
+                currentStartTime: null,
+                ownerActive: false,
+                removed: true
+            };
+            saveTubewellData(cleared);
+
+            try {
+                await safeUpdateDoc(doc(db, 'tubewells', ownerUid + '_primary'), {
+                    name: '',
+                    location: '',
+                    mapLink: '',
+                    status: 'stopped',
+                    currentCustomer: null,
+                    currentCustomerUid: null,
+                    currentStartTime: null,
+                    ownerActive: false,
+                    removed: true,
+                    removedAt: safeServerTimestamp()
+                });
+            } catch (e) {
+                console.error(e);
+            }
+        } else {
+            // Extra tubewell — drop from local list
+            const extras = JSON.parse(localStorage.getItem('tubewell_extras') || '[]');
+            const idx = parseInt(String(key).replace('extra_', ''), 10);
+            if (!isNaN(idx) && idx >= 0) {
+                extras.splice(idx, 1);
+                localStorage.setItem('tubewell_extras', JSON.stringify(extras));
+            }
+        }
+
+        // Unlink all customers of this owner (keep water_usage)
+        const linksSnap = await getDocs(
+            query(collection(db, 'customer_links'), where('ownerUid', '==', ownerUid))
+        );
+        for (const d of linksSnap.docs) {
+            await safeDeleteDoc(doc(db, 'customer_links', d.id));
+        }
+
+        // Soft-remove active customer contacts for this owner
+        const custSnap = await getDocs(
+            query(collection(db, 'customers'), where('ownerId', '==', ownerUid))
+        );
+        for (const d of custSnap.docs) {
+            const data = d.data();
+            if (data.status === 'removed') continue;
+            await safeUpdateDoc(doc(db, 'customers', d.id), {
+                status: 'removed',
+                removedAt: safeServerTimestamp()
+            });
+        }
+
+        // Clear queues for this owner
+        const qSnap = await getDocs(
+            query(collection(db, 'queues'), where('ownerId', '==', ownerUid))
+        );
+        for (const d of qSnap.docs) {
+            await safeDeleteDoc(doc(db, 'queues', d.id));
+        }
+
+        // Local owner lists
+        saveCustomers([]);
+        saveQueue([]);
+        localStorage.removeItem('customers');
+
+    } catch (e) {
+        console.error('proceedRemoveTubewell', e);
+    }
+
+    closeModal('edit-tubewell-modal');
+    renderTubewells();
+    if (typeof renderStatusCard === 'function') renderStatusCard();
+    if (typeof renderCustomers === 'function') renderCustomers();
+    if (typeof renderBahiCustomers === 'function') renderBahiCustomers();
+
+    showToast(
+        currentLang === 'en'
+            ? 'Tubewell removed. Customers unlinked. History kept.'
+            : 'ट्यूबवेल हटाया। ग्राहक अनलिंक। इतिहास सुरक्षित।',
+        'success'
+    );
+}
 
 
 /* --- INIT & AUTO LOGIN --- */

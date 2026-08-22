@@ -6,9 +6,8 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="default">
-    <link rel="icon"
-        href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='22' fill='%23007AFF'/><path d='M50 15v70M65 25H42a12 12 0 0 0 0 24h18a12 12 0 0 1 0 24H28' stroke='white' stroke-width='8' stroke-linecap='round' fill='none'/></svg>"
-        type="image/svg+xml">
+    <link rel="icon" type="image/svg+xml"
+        href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='22' fill='%23007AFF'/><rect x='40' y='35' width='20' height='45' rx='3' fill='white'/><path d='M50 35V22M50 22h22' stroke='white' stroke-width='8' stroke-linecap='round'/><circle cx='50' cy='22' r='6' fill='white'/><path d='M35 80h30' stroke='white' stroke-width='6' stroke-linecap='round'/></svg>">
     <title>Apna Tubewell</title>
 
     <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -265,7 +264,7 @@
         <!-- DASHBOARD VIEW -->
         <main id="view-home" class="main-view active pb-nav">
             <div style="display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:12px;">
-                <h3 class="section-title" style="margin:0;" data-i18n="todaySummary">Summary</h3>
+                <h3 class="section-title" style="margin:0; min-width: 160px;" data-i18n="todaySummary">Summary</h3>
                 <select id="dash-period-select" onchange="onDashPeriodChange(this.value)" style="min-width:120px; padding:8px 12px; border-radius:20px; border:1px solid var(--separator);
                background:var(--card); color:var(--text); font-size:14px; font-weight:600;">
                     <option value="today" data-i18n="periodToday">Today</option>
@@ -832,7 +831,7 @@
                         </div>
                     </div>
                     <div id="become-owner-section"
-                        style="display: none; margin: 16px 0 0; padding: 16px 0; text-align: center; border-bottom: 1px solid var(--ios-border, var(--separator, #e5e5ea));">
+                        style="display: none; padding: 16px 0; text-align: center; border-bottom: 1px solid var(--ios-border, var(--separator, #e5e5ea));">
                         <button class="btn-primary" onclick="becomeOwner()"
                             style="width: auto; min-width: 200px; max-width: 100%; padding: 12px 28px;"
                             data-i18n="becomeOwner">Become an Owner</button>
@@ -1113,7 +1112,14 @@
                     <label>Village / address</label>
                     <input type="text" id="edit-tw-location" placeholder="Village">
                 </div>
+                <div class="form-group">
+                    <label>Google Maps link (optional)</label>
+                    <input type="url" id="edit-tw-map" placeholder="https://maps.google.com/...">
+                </div>
+
                 <button class="btn-primary mt-4" style="width:100%;" onclick="saveEditTubewell()">Save</button>
+                <button class="btn-ghost" style="width:100%; margin-top:10px; color:var(--ios-red);"
+                    onclick="removeTubewellFromEdit()">Remove tubewell</button>
             </div>
         </div>
     </div>

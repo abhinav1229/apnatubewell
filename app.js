@@ -1,7 +1,7 @@
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.4.0/firebase-app.js";
 import { getAnalytics } from "https://www.gstatic.com/firebasejs/10.4.0/firebase-analytics.js";
-import { getFirestore, collection, addDoc, serverTimestamp, getDoc, doc, setDoc, updateDoc, onSnapshot, query, where, getDocs, deleteDoc } from "https://www.gstatic.com/firebasejs/10.4.0/firebase-firestore.js";
-import { getAuth, RecaptchaVerifier, signInWithPhoneNumber } from "https://www.gstatic.com/firebasejs/10.4.0/firebase-auth.js";
+import { getFirestore, collection, addDoc, serverTimestamp, getDoc, doc, setDoc, updateDoc, onSnapshot, query, where, getDocs, deleteDoc, runTransaction } from "https://www.gstatic.com/firebasejs/10.4.0/firebase-firestore.js";
+// Auth removed — phone + DOB verification used instead
 
 const firebaseConfig = {
     apiKey: "AIzaSyASCIXAtR-8kOeH1N34_XrFGVapRrvD5sk",
@@ -16,7 +16,6 @@ const firebaseConfig = {
 const app = initializeApp(firebaseConfig);
 const analytics = getAnalytics(app);
 const db = getFirestore(app);
-const auth = getAuth(app);
 const isMockMode = false; // Set to false when you enable real Firebase Auth
 let currentLang = 'en';
 let userRole = localStorage.getItem('user_role') || 'owner';
@@ -45,11 +44,19 @@ function safeServerTimestamp() {
     return isMockMode ? new Date().toISOString() : serverTimestamp();
 }
 
+async function resolveCustomerUid(phone) {
+    if (!phone) return '';
+    try {
+        const snap = await getDocs(query(collection(db, 'users'), where('phone', '==', phone)));
+        for (const d of snap.docs) {
+            if (d.data().accountStatus !== 'deleted') return d.id;
+        }
+    } catch (e) { console.error('resolveCustomerUid', e); }
+    return '';
+}
 
 window.logout = function () {
     stopListeners();
-
-    // Clear ALL user-related localStorage
     localStorage.removeItem('is_logged_in');
     localStorage.removeItem('user_phone');
     localStorage.removeItem('user_role');
@@ -69,8 +76,8 @@ window.logout = function () {
     localStorage.removeItem('customer_history');
     localStorage.removeItem('user_roles');
     localStorage.removeItem('bahi_contacts');
-
-    auth.signOut();
+    localStorage.removeItem('daily_notes');
+    cleanupCustomerData();
     location.reload();
 }
 
@@ -97,6 +104,10 @@ function formatDuration(hours) {
     if (h <= 0) return currentLang === 'en' ? '0 min' : '0 मिनट';
 
     const totalMin = Math.round(h * 60);
+    if (totalMin < 1) {
+        return currentLang === 'en' ? '< 1 min' : '< 1 मिनट';
+    }
+
     const hrs = Math.floor(totalMin / 60);
     const mins = totalMin % 60;
 
@@ -199,11 +210,12 @@ function waterKey(r) {
     return r.id || `${r.date}|${r.start || r.start_time || ''}|${r.amount}`;
 }
 
-/** Payments applied to water bills oldest-first. Returns Set of settled water keys. */
+/** Payments applied to water bills oldest-first. Returns { settled: Set, remainingCredit: number } */
 function getSettledWaterKeys(waterList, paymentsList) {
     const totalPaid = (paymentsList || []).reduce((s, p) => s + (parseFloat(p.amount) || 0), 0);
     let creditLeft = totalPaid;
     const settled = new Set();
+    const partial = new Map(); // key -> amount still due
     const sorted = (waterList || []).slice().sort((a, b) =>
         (a.date || '').localeCompare(b.date || '') ||
         ((a.start || a.start_time || '') + '').localeCompare((b.start || b.start_time || '') + '')
@@ -214,13 +226,17 @@ function getSettledWaterKeys(waterList, paymentsList) {
         if (creditLeft >= amt) {
             settled.add(key);
             creditLeft -= amt;
+        } else if (creditLeft > 0) {
+            // Partial settlement
+            partial.set(key, amt - creditLeft);
+            creditLeft = 0;
         }
     });
-    return settled;
+    return { settled, partial, remainingCredit: creditLeft };
 }
 
 /* --- TUBEWELL STATUS --- */
-window.renderStatusCard = function () {
+window.renderStatusCard = async function () {
     const tw = getTubewellData();
     const status = tw.status || 'stopped';
     const badge = document.getElementById('status-badge');
@@ -257,10 +273,22 @@ window.renderStatusCard = function () {
         // Occupied
         badge.innerText = locales[currentLang].statusRunning;
         const cust = tw.currentCustomer ? getCustomerById(tw.currentCustomer) : null;
+        let custName = cust ? cust.name : '-';
+
+        // Fresh name from server
+        if (cust && cust.customerUid) {
+            try {
+                const uDoc = await getDoc(doc(db, 'users', cust.customerUid));
+                if (uDoc.exists() && uDoc.data().accountStatus !== 'deleted') {
+                    custName = uDoc.data().name || custName;
+                }
+            } catch (e) { }
+        }
+
         if (occLine) {
             occLine.style.display = 'block';
             occLine.innerHTML = '<span data-i18n="currentlyOccupiedBy">' + locales[currentLang].currentlyOccupiedBy +
-                '</span>: <strong>' + (cust ? cust.name : '-') + '</strong>';
+                '</span>: <strong>' + custName + '</strong>';
         }
         if (timeLine) {
             timeLine.style.display = 'block';
@@ -288,7 +316,7 @@ window.renderStatusCard = function () {
     }
 };
 
-window.renderQueue = function () {
+window.renderQueue = async function () {
     const queue = getQueue();
     const container = document.getElementById('queue-list-container');
     if (!container) return;
@@ -305,15 +333,33 @@ window.renderQueue = function () {
     if (queue.length === 0) {
         container.innerHTML = '<div class="list-item empty-state"><div class="item-info"><p data-i18n="noQueue">' + locales[currentLang].noQueue + '</p></div></div>';
     } else {
-        container.innerHTML = queue.map((entry, idx) => {
+        // Resolve fresh names from server
+        const rows = await Promise.all(queue.map(async (entry, idx) => {
             const cust = getCustomerById(entry.customerId);
-            return '<div class="list-item"><div style="display:flex; align-items:center; gap:12px;"><span class="queue-num">' + (idx + 1) + '</span><div class="item-info"><h4>' + (cust ? cust.name : 'Unknown') + '</h4><p>' + (cust ? cust.phone : '') + (idx === 0 ? ' · <span style="color:var(--ios-green);">' + (currentLang === 'en' ? 'Next' : 'अगला') + '</span>' : '') + '</p></div></div><button class="btn-small" onclick="removeFromQueue(\'' + entry.customerId + '\')">' + locales[currentLang].removeFromQueue + '</button></div>';
+            let name = cust ? cust.name : 'Unknown';
+            const phone = cust ? cust.phone : '';
+
+            // Fresh name from server
+            if (cust && cust.customerUid) {
+                try {
+                    const uDoc = await getDoc(doc(db, 'users', cust.customerUid));
+                    if (uDoc.exists() && uDoc.data().accountStatus !== 'deleted') {
+                        name = uDoc.data().name || name;
+                    }
+                } catch (e) { }
+            }
+
+            return { entry, idx, name, phone };
+        }));
+
+        container.innerHTML = rows.map(({ entry, idx, name, phone }) => {
+            return '<div class="list-item"><div style="display:flex; align-items:center; gap:12px;"><span class="queue-num">' + (idx + 1) + '</span><div class="item-info"><h4>' + name + '</h4><p>' + phone + (idx === 0 ? ' · <span style="color:var(--ios-green);">' + (currentLang === 'en' ? 'Next' : 'अगला') + '</span>' : '') + '</p></div></div><button class="btn-small" onclick="removeFromQueue(\'' + entry.customerId + '\')">' + locales[currentLang].removeFromQueue + '</button></div>';
         }).join('');
     }
     renderNextInQueue();
 }
 
-window.renderNextInQueue = function () {
+window.renderNextInQueue = async function () {
     const el = document.getElementById('next-in-queue-section');
     if (!el) return;
     const queue = getQueue();
@@ -323,8 +369,19 @@ window.renderNextInQueue = function () {
     }
     const entry = queue[0];
     const cust = getCustomerById(entry.customerId);
-    const name = cust ? cust.name : 'Unknown';
+    let name = cust ? cust.name : 'Unknown';
     const phone = cust ? cust.phone : '';
+
+    // Fresh name from server
+    if (cust && cust.customerUid) {
+        try {
+            const uDoc = await getDoc(doc(db, 'users', cust.customerUid));
+            if (uDoc.exists() && uDoc.data().accountStatus !== 'deleted') {
+                name = uDoc.data().name || name;
+            }
+        } catch (e) { }
+    }
+
     el.innerHTML = '<div class="list-item" style="background:rgba(0,122,255,0.06);"><div style="display:flex; align-items:center; gap:12px; width:100%;"><span class="queue-num">1</span><div class="item-info"><h4>' + name + '</h4><p>' + phone + ' · ' + (currentLang === 'en' ? 'Next in queue' : 'कतार में अगला') + '</p></div></div></div>';
 }
 
@@ -385,50 +442,70 @@ window.startWaterSession = async function () {
 
     const ownerUid = localStorage.getItem('user_uid');
     const twRef = doc(db, 'tubewells', ownerUid + '_primary');
-    const twDoc = await getDoc(twRef);
-    const tw = twDoc.data() || {};
 
-    if (tw.status === 'work_in_progress') {
-        showToast(currentLang === 'en' ? 'Tubewell under maintenance' : 'ट्यूबवेल मरम्मत में है', 'error');
-        return;
+    try {
+        await runTransaction(db, async (transaction) => {
+            const twDoc = await transaction.get(twRef);
+            if (!twDoc.exists()) {
+                throw new Error('Tubewell not found');
+            }
+            const tw = twDoc.data();
+
+            if (tw.status === 'work_in_progress') {
+                throw new Error('maintenance');
+            }
+            if (tw.status === 'power_issue') {
+                throw new Error('power');
+            }
+            if (tw.status === 'running') {
+                throw new Error('running');
+            }
+
+            const startTime = new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false });
+
+            transaction.update(twRef, {
+                status: 'running',
+                currentCustomer: customerId,
+                currentCustomerUid: getCustomerById(customerId)?.customerUid || await resolveCustomerUid(getCustomerById(customerId)?.phone) || customerId,
+                currentStartTime: startTime,
+                currentStartDate: new Date().toISOString().split('T')[0],
+                currentSessionRate: sessionRate
+            });
+        });
+
+        // Remove from queue in Firestore (outside transaction — best effort)
+        const queueRef = collection(db, 'queues');
+        const q = query(queueRef, where('ownerId', '==', ownerUid), where('customerId', '==', customerId));
+        const queueSnap = await getDocs(q);
+        queueSnap.forEach(async (d) => { await safeDeleteDoc(doc(db, 'queues', d.id)); });
+
+        // Update local
+        const localTw = getTubewellData();
+        localTw.status = 'running';
+        localTw.currentCustomer = customerId;
+        localTw.currentStartTime = new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false });
+        localTw.currentStartDate = new Date().toISOString().split('T')[0];
+        localTw.currentSessionRate = sessionRate;
+        saveTubewellData(localTw);
+
+        renderStatusCard();
+        renderQueue();
+        renderNextInQueue();
+        closeModal('start-water-modal');
+        showToast(currentLang === 'en' ? 'Water started @ ₹' + sessionRate + '/hr' : 'पानी शुरू @ ₹' + sessionRate + '/घंटा', 'success');
+
+    } catch (err) {
+        if (err.message === 'maintenance') {
+            showToast(currentLang === 'en' ? 'Tubewell under maintenance' : 'ट्यूबवेल मरम्मत में है', 'error');
+        } else if (err.message === 'power') {
+            showToast(currentLang === 'en' ? 'Power issue — cannot start' : 'बिजली समस्या — शुरू नहीं कर सकते', 'error');
+        } else if (err.message === 'running') {
+            showToast(currentLang === 'en' ? 'Already occupied' : 'पहले से व्यस्त', 'error');
+        } else {
+            showToast(currentLang === 'en' ? 'Could not start water' : 'पानी शुरू नहीं हो सका', 'error');
+            console.error('startWaterSession transaction failed', err);
+        }
     }
-    if (tw.status === 'power_issue') {
-        showToast(currentLang === 'en' ? 'Power issue — cannot start' : 'बिजली समस्या — शुरू नहीं कर सकते', 'error');
-        return;
-    }
-    if (tw.status === 'running') {
-        showToast(currentLang === 'en' ? 'Already occupied' : 'पहले से व्यस्त', 'error');
-        return;
-    }
-
-    // Remove from queue in Firestore
-    const queueRef = collection(db, 'queues');
-    const q = query(queueRef, where('ownerId', '==', ownerUid), where('customerId', '==', customerId));
-    const queueSnap = await getDocs(q);
-    queueSnap.forEach(async (d) => { await safeDeleteDoc(doc(db, 'queues', d.id)); });
-
-    const startTime = new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false });
-    await safeUpdateDoc(twRef, {
-        status: 'running',
-        currentCustomer: customerId,
-        currentCustomerUid: getCustomerById(customerId)?.customerUid || customerId,
-        currentStartTime: startTime,
-        currentSessionRate: sessionRate
-    });
-
-    // Update local
-    const localTw = getTubewellData();
-    localTw.status = 'running';
-    localTw.currentCustomer = customerId;
-    localTw.currentStartTime = startTime;
-    localTw.currentSessionRate = sessionRate;
-    saveTubewellData(localTw);
-
-    renderStatusCard();
-    renderQueue();
-    renderNextInQueue();
-    closeModal('start-water-modal');
-    showToast(currentLang === 'en' ? 'Water started @ ₹' + sessionRate + '/hr' : 'पानी शुरू @ ₹' + sessionRate + '/घंटा', 'success');
 };
 
 window.stopWaterSession = async function () {
@@ -440,18 +517,26 @@ window.stopWaterSession = async function () {
     if (tw.status !== 'running' || !tw.currentCustomer) return;
 
     const startTime = tw.currentStartTime;
+    const startDate = tw.currentStartDate || new Date().toISOString().split('T')[0];
     const endTime = new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false });
-    const today = new Date().toISOString().split('T')[0];
-    const start = new Date(today + 'T' + startTime);
-    let end = new Date(today + 'T' + endTime);
-    if (end < start) end.setDate(end.getDate() + 1);
-    const duration = (end - start) / (1000 * 60 * 60);
+    const endDate = new Date().toISOString().split('T')[0];
+
+    const startDateTime = new Date(startDate + 'T' + startTime);
+    let endDateTime = new Date(endDate + 'T' + endTime);
+
+    // If end time is earlier in the day than start time, assume same day ended next day (legacy) or use actual dates
+    if (endDateTime < startDateTime && startDate === endDate) {
+        endDateTime.setDate(endDateTime.getDate() + 1);
+    }
+
+    const durationMs = endDateTime - startDateTime;
+    const duration = durationMs / (1000 * 60 * 60);
     const rate = tw.currentSessionRate || tw.rate || 150;
     const amount = Math.round(duration * rate);
 
     // Resolve customer identity for cross-device sync
     const cust = getCustomerById(tw.currentCustomer) || {};
-    const customerUid = tw.currentCustomerUid || cust.customerUid || null;
+    const customerUid = tw.currentCustomerUid || cust.customerUid || await resolveCustomerUid(cust.phone) || null;
     const customerPhone = cust.phone || '';
     const customerName = cust.name || '';
 
@@ -831,7 +916,19 @@ window.renderCustomers = async function () {
     const list = document.getElementById('customers-list');
     if (!list) return;
 
-    function customerRowHtml(c) {
+    async function getFreshName(customerUid, fallbackName) {
+        if (!customerUid) return fallbackName;
+        try {
+            const uDoc = await getDoc(doc(db, 'users', customerUid));
+            if (uDoc.exists() && uDoc.data().accountStatus !== 'deleted') {
+                return uDoc.data().name || fallbackName;
+            }
+        } catch (e) { console.error('getFreshName', e); }
+        return fallbackName;
+    }
+
+    function customerRowHtml(c, freshName) {
+        const displayName = freshName || c.name || 'Customer';
         const deleted = c.accountDeleted === true;
         const badge = deleted
             ? ' <span style="font-size:11px;color:var(--ios-red);background:rgba(255,59,48,0.12);padding:2px 6px;border-radius:6px;">' +
@@ -839,7 +936,7 @@ window.renderCustomers = async function () {
             : '';
         return '<div class="list-item">' +
             '<div class="item-info" style="flex:1;cursor:pointer;" onclick="openCustomerDetail(\'' + c.id + '\')">' +
-            '<h4>' + (c.name || '') + badge + '</h4><p>' + (c.phone || '') + '</p></div>' +
+            '<h4>' + displayName + badge + '</h4><p>' + (c.phone || '') + '</p></div>' +
             '<button class="btn-small" style="margin-right:8px;" onclick="removeCustomer(\'' + c.id + '\', event)">' +
             (currentLang === 'en' ? 'Remove' : 'हटाएं') +
             '</button>' +
@@ -847,41 +944,45 @@ window.renderCustomers = async function () {
             '</div>';
     }
 
-    let localCustomers = getCustomers().filter(c => c.status !== 'removed');
-    if (localCustomers.length === 0) {
-        list.innerHTML = '<div class="list-item empty-state"><div class="item-info"><p data-i18n="noCustomers">' +
-            locales[currentLang].noCustomers + '</p></div></div>';
-    } else {
-        list.innerHTML = localCustomers.map(customerRowHtml).join('');
-    }
-
-    // 2) Sync from Firestore — ONLY active (not removed)
+    // 1) Always fetch from Firestore first — server is source of truth
+    let serverCustomers = [];
     try {
         const snapshot = await getDocs(
             query(collection(db, 'customers'), where('ownerId', '==', ownerUid))
         );
-        const active = [];
         snapshot.forEach(d => {
             const data = d.data();
             if (data.status === 'removed') return;
-            active.push({
+            serverCustomers.push({
                 ...data,
                 id: data.id || d.id,
                 status: data.status || 'active'
             });
         });
-
-        saveCustomers(active);
-        loadCustomerData();
-
-        if (active.length === 0) {
-            list.innerHTML = '<div class="list-item empty-state"><div class="item-info"><p data-i18n="noCustomers">' +
-                locales[currentLang].noCustomers + '</p></div></div>';
-        } else {
-            list.innerHTML = active.map(customerRowHtml).join('');
-        }
     } catch (e) {
-        console.error('renderCustomers FS', e);
+        console.error('renderCustomers FS fetch', e);
+    }
+
+    // 2) Resolve fresh names from users collection
+    const rows = await Promise.all(serverCustomers.map(async c => {
+        const freshName = await getFreshName(c.customerUid, c.name);
+        return { c, freshName };
+    }));
+
+    // 3) Update localStorage with fresh names
+    const updatedCustomers = rows.map(({ c, freshName }) => ({
+        ...c,
+        name: freshName
+    }));
+    saveCustomers(updatedCustomers);
+    loadCustomerData();
+
+    // 4) Render
+    if (updatedCustomers.length === 0) {
+        list.innerHTML = '<div class="list-item empty-state"><div class="item-info"><p data-i18n="noCustomers">' +
+            locales[currentLang].noCustomers + '</p></div></div>';
+    } else {
+        list.innerHTML = rows.map(({ c, freshName }) => customerRowHtml(c, freshName)).join('');
     }
 };
 
@@ -911,9 +1012,9 @@ async function proceedRemoveCustomer(customerId) {
     const cust = getCustomerById(customerId) || customerData[customerId] || {};
     const phone = cust.phone || '';
     const name = cust.name || 'Customer';
-
-    // Local Bahi meta (optional, for this session)
     const customerUid = cust.customerUid || '';
+
+    // Save to bahi_contacts BEFORE removing from active list
     const bahiContacts = JSON.parse(localStorage.getItem('bahi_contacts') || '{}');
     bahiContacts[customerId] = {
         id: customerId,
@@ -923,14 +1024,16 @@ async function proceedRemoveCustomer(customerId) {
     };
     localStorage.setItem('bahi_contacts', JSON.stringify(bahiContacts));
 
+    // Ensure customerData has this entry for Bahi rendering
     if (!customerData[customerId]) {
         customerData[customerId] = { name: name, phone: phone, history: [] };
     } else {
         customerData[customerId].name = name;
         customerData[customerId].phone = phone;
+        customerData[customerId].customerUid = customerUid;
     }
 
-    // Active list only
+    // Remove from active list only
     saveCustomers(getCustomers().filter(c => c.id !== customerId && c.phone !== phone));
 
     // DB: mark removed — do NOT delete doc
@@ -939,10 +1042,10 @@ async function proceedRemoveCustomer(customerId) {
             status: 'removed',
             removedAt: safeServerTimestamp(),
             name: name,
-            phone: phone
+            phone: phone,
+            customerUid: customerUid
         });
     } catch (e) {
-        // Fallback if doc id differs
         try {
             const snap = await getDocs(query(collection(db, 'customers'), where('ownerId', '==', ownerUid)));
             for (const d of snap.docs) {
@@ -952,7 +1055,8 @@ async function proceedRemoveCustomer(customerId) {
                         status: 'removed',
                         removedAt: safeServerTimestamp(),
                         name: data.name || name,
-                        phone: data.phone || phone
+                        phone: data.phone || phone,
+                        customerUid: data.customerUid || customerUid
                     });
                 }
             }
@@ -961,7 +1065,7 @@ async function proceedRemoveCustomer(customerId) {
         }
     }
 
-    // Queue only
+    // Queue cleanup
     try {
         saveQueue(getQueue().filter(e => e.customerId !== customerId));
         const qs = await getDocs(query(
@@ -978,6 +1082,7 @@ async function proceedRemoveCustomer(customerId) {
     populateCustomerDropdowns();
     await renderCustomers();
     renderBahiCustomers();
+    cleanupCustomerData();
     showToast(
         currentLang === 'en' ? 'Removed from list. Bahi kept.' : 'सूची से हटाया। बही सुरक्षित।',
         'success'
@@ -990,6 +1095,18 @@ window.renderBahiCustomers = async function () {
 
     const ownerUid = localStorage.getItem('user_uid');
     const byId = {};
+
+    // Helper: get fresh name from users collection
+    async function getFreshName(customerUid, fallbackName) {
+        if (!customerUid) return fallbackName;
+        try {
+            const uDoc = await getDoc(doc(db, 'users', customerUid));
+            if (uDoc.exists() && uDoc.data().accountStatus !== 'deleted') {
+                return uDoc.data().name || fallbackName;
+            }
+        } catch (e) { }
+        return fallbackName;
+    }
 
     // From Firestore customers (including removed)
     try {
@@ -1011,7 +1128,7 @@ window.renderBahiCustomers = async function () {
     // Merge local history / water_history / bahi_contacts (backup)
     const active = getCustomers();
     active.forEach(c => {
-        byId[c.id] = { id: c.id, name: c.name, phone: c.phone || '' };
+        byId[c.id] = { id: c.id, name: c.name, phone: c.phone || '', customerUid: c.customerUid || '' };
     });
     const historyMap = JSON.parse(localStorage.getItem('customer_history') || '{}');
     const bahiContacts = JSON.parse(localStorage.getItem('bahi_contacts') || '{}');
@@ -1020,7 +1137,8 @@ window.renderBahiCustomers = async function () {
             byId[cid] = {
                 id: cid,
                 name: bahiContacts[cid].name || 'Customer',
-                phone: bahiContacts[cid].phone || ''
+                phone: bahiContacts[cid].phone || '',
+                customerUid: bahiContacts[cid].customerUid || ''
             };
         }
     });
@@ -1031,6 +1149,23 @@ window.renderBahiCustomers = async function () {
         }
     });
 
+    // Fallback: resolve names from water_usage for customers with history but no customer doc
+    try {
+        const usageSnap = await getDocs(query(collection(db, 'water_usage'), where('business_id', '==', ownerUid)));
+        usageSnap.forEach(d => {
+            const data = d.data();
+            const cid = data.customer_id;
+            if (cid && !byId[cid] && data.customer_name) {
+                byId[cid] = {
+                    id: cid,
+                    name: data.customer_name,
+                    phone: data.customer_phone || '',
+                    customerUid: data.customer_uid || ''
+                };
+            }
+        });
+    } catch (e) { console.error('water_usage name fallback', e); }
+
     const rows = Object.values(byId);
     if (rows.length === 0) {
         list.innerHTML = '<div class="list-item empty-state"><div class="item-info"><p data-i18n="noCustomers">' +
@@ -1038,7 +1173,13 @@ window.renderBahiCustomers = async function () {
         return;
     }
 
-    list.innerHTML = rows.map(c =>
+    // Resolve fresh names from users collection before rendering
+    const rowsWithFreshNames = await Promise.all(rows.map(async c => {
+        const freshName = await getFreshName(c.customerUid, c.name);
+        return { ...c, name: freshName };
+    }));
+
+    list.innerHTML = rowsWithFreshNames.map(c =>
         '<div class="list-item" onclick="openBahiLedger(\'' + c.id + '\')">' +
         '<div class="item-info"><h4>' + (c.name || 'Customer') + '</h4><p>' + (c.phone || '') + '</p></div>' +
         '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--ios-gray)" stroke-width="2">' +
@@ -1128,7 +1269,20 @@ window.openBahiLedger = async function (id) {
         } catch (e) { }
     }
 
-    document.getElementById('bahi-ledger-name').innerText = customerData[id].name || 'Customer';
+    // Resolve fresh name from users collection first
+    let displayName = customerData[id].name || 'Customer';
+    const custEntry = getCustomerById(id) || {};
+    if (custEntry.customerUid) {
+        try {
+            const uDoc = await getDoc(doc(db, 'users', custEntry.customerUid));
+            if (uDoc.exists() && uDoc.data().accountStatus !== 'deleted') {
+                displayName = uDoc.data().name || displayName;
+                customerData[id].name = displayName;
+            }
+        } catch (e) { }
+    }
+
+    document.getElementById('bahi-ledger-name').innerText = displayName;
     const history = customerData[id].history || [];
     const list = document.getElementById('bahi-ledger-list');
 
@@ -1149,26 +1303,45 @@ window.openBahiLedger = async function (id) {
     const netDue = Math.max(0, allWaterAmt - allPaidAmt);
     const finalBalance = allWaterAmt - allPaidAmt;
 
-    const sorted = history.slice().sort((a, b) => new Date(a.date) - new Date(b.date));
-    let runningBalance = 0;
+    // Sort by date, then by insertion order (water before payment on same date)
+    const sorted = history.slice().sort((a, b) => {
+        const dateCmp = (a.date || '').localeCompare(b.date || '');
+        if (dateCmp !== 0) return dateCmp;
+        // Same date: water entries come before payments for consistent display
+        if (a.type === 'water' && b.type !== 'water') return -1;
+        if (a.type !== 'water' && b.type === 'water') return 1;
+        return 0;
+    });
 
-    const ledgerRows = sorted.map(entry => {
+    // Calculate running balance sequentially — each entry gets its own balance
+    let runningBalance = 0;
+    const entriesWithBalance = sorted.map(entry => {
+        if (entry.type === 'water') {
+            runningBalance += parseFloat(entry.amount) || 0;
+        } else {
+            runningBalance -= parseFloat(entry.amount) || 0;
+        }
+        return { ...entry, _balance: runningBalance };
+    });
+
+    const ledgerRows = entriesWithBalance.map(entry => {
         let debit = 0, credit = 0, title = '', noteHtml = '';
 
         if (entry.type === 'water') {
             debit = entry.amount || 0;
-            runningBalance += debit;
             title = 'Water: ' + (entry.start || '') + '-' + (entry.end || '');
             noteHtml = '<p style="font-size:12px;color:var(--ios-gray);margin-top:2px;">' +
                 formatDuration(entry.duration) + '</p>';
         } else {
             credit = entry.amount || 0;
-            runningBalance -= credit;
             title = 'Payment · ' + (entry.mode || 'Cash');
             if (entry.note) {
                 noteHtml = '<p style="font-size:12px;color:var(--ios-gray);margin-top:2px;">' + entry.note + '</p>';
             }
         }
+
+        const bal = entry._balance;
+        const balColor = bal > 0 ? 'var(--ios-red)' : (bal < 0 ? 'var(--ios-green)' : 'var(--ios-gray)');
 
         return '<div class="list-item" style="flex-direction: column; align-items: flex-start; gap: 4px;">' +
             '<div style="display:flex; justify-content:space-between; width:100%;">' +
@@ -1182,9 +1355,6 @@ window.openBahiLedger = async function (id) {
             '<div style="font-size:13px; color:var(--ios-green);">' + (credit ? '₹' + credit : '') + '</div>' +
             '</div>' +
             '</div>' +
-            '<div style="width:100%; text-align:right; font-size:12px; color:var(--ios-gray); border-top:1px solid var(--ios-border); padding-top:4px;">Balance: <strong style="color:' +
-            (runningBalance > 0 ? 'var(--ios-red)' : 'var(--ios-green)') +
-            ';">₹' + runningBalance + '</strong></div>' +
             '</div>';
     }).join('');
 
@@ -1251,31 +1421,32 @@ window.updateDashboardStats = function () {
     const periodWater = history.filter(e => e.type === 'water' && inRange(e.date));
     const periodPay = history.filter(e => e.type === 'payment' && inRange(e.date));
 
-    // For settlement, use ALL payments for that customer (not only in period),
-    // so advance paid earlier still covers today's water.
-    const custHistory = JSON.parse(localStorage.getItem('customer_history') || '{}');
+    // For settlement, use ONLY period payments against period water (scoped to selected period)
+    const periodPaysTotal = periodPay.reduce((s, p) => s + (parseFloat(p.amount) || 0), 0);
+    let creditLeft = periodPaysTotal;
+    const sortedWater = periodWater.slice().sort((a, b) =>
+        (a.date || '').localeCompare(b.date || '') ||
+        ((a.start || a.start_time || '') + '').localeCompare((b.start || b.start_time || '') + '')
+    );
+    const settledKeys = new Set();
+    sortedWater.forEach(e => {
+        const amt = parseFloat(e.amount) || 0;
+        const key = waterKey(e);
+        if (creditLeft >= amt) {
+            settledKeys.add(key);
+            creditLeft -= amt;
+        }
+    });
 
     periodWater.forEach(e => {
         hours += e.duration || 0;
         revenue += e.amount || 0;
-    });
-
-    // Received in period = payments in period
-    periodPay.forEach(e => { received += e.amount || 0; });
-
-    // Pending = water in period not covered by that customer's total payments
-    periodWater.forEach(e => {
-        const cid = e.customerId;
-        const pays = (custHistory[cid] || []).filter(x => x.type === 'payment')
-            .concat(history.filter(h => h.customerId === cid && h.type === 'payment'));
-        const watersForCust = history.filter(h => h.customerId === cid && h.type === 'water');
-        const settled = getSettledWaterKeys(watersForCust, pays);
-        if (e.status === 'paid' || settled.has(waterKey(e))) {
-            // already covered — count toward received if you want period paid water
-        } else {
+        if (!settledKeys.has(waterKey(e)) && e.status !== 'paid') {
             pending += e.amount || 0;
         }
     });
+
+    periodPay.forEach(e => { received += e.amount || 0; });
 
     const hrsEl = document.getElementById('stat-hours');
     if (hrsEl) hrsEl.innerHTML = hours.toFixed(1) + ' <small data-i18n="hrs">' + locales[currentLang].hrs + '</small>';
@@ -1288,6 +1459,12 @@ window.updateDashboardStats = function () {
 };
 
 window.saveDailyNote = async function () {
+    const role = localStorage.getItem('user_role');
+    if (role !== 'owner') {
+        showToast(currentLang === 'en' ? 'Only owners can send announcements' : 'केवल मालिक घोषणा भेज सकते हैं', 'error');
+        return;
+    }
+
     const input = document.getElementById('daily-note-input');
     if (!input) return;
 
@@ -1311,10 +1488,7 @@ window.saveDailyNote = async function () {
     };
 
     try {
-        // One doc per owner — latest announcement
         await safeSetDoc(doc(db, 'announcements', ownerUid), payload);
-
-        // Optional: also keep local copy for owner UI
         const today = payload.date;
         const notes = JSON.parse(localStorage.getItem('daily_notes') || '{}');
         notes[today] = note;
@@ -1334,6 +1508,12 @@ window.saveDailyNote = async function () {
 };
 
 window.clearAnnouncement = async function () {
+    const role = localStorage.getItem('user_role');
+    if (role !== 'owner') {
+        showToast(currentLang === 'en' ? 'Only owners can remove announcements' : 'केवल मालिक घोषणा हटा सकते हैं', 'error');
+        return;
+    }
+
     const ownerUid = localStorage.getItem('user_uid');
     if (!ownerUid) return;
 
@@ -1403,12 +1583,24 @@ window.renderPendingPayments = function () {
 
     water.forEach(e => {
         const cid = e.customerId;
-        const pays = (custHistory[cid] || []).filter(x => x.type === 'payment');
-        // Also include payments stored only in water_history if any
-        const paysFromHistory = history.filter(h => h.customerId === cid && h.type === 'payment');
-        const allPays = pays.concat(paysFromHistory);
+        // Deduplicate payments by id
+        const seenIds = new Set();
+        const pays = [];
+        (custHistory[cid] || []).forEach(x => {
+            if (x.type === 'payment' && !seenIds.has(x.id)) {
+                seenIds.add(x.id);
+                pays.push(x);
+            }
+        });
+        history.forEach(h => {
+            if (h.customerId === cid && h.type === 'payment' && !seenIds.has(h.id)) {
+                seenIds.add(h.id);
+                pays.push(h);
+            }
+        });
+
         const watersForCust = water.filter(w => w.customerId === cid);
-        const settled = getSettledWaterKeys(watersForCust, allPays);
+        const { settled } = getSettledWaterKeys(watersForCust, pays);
         if (settled.has(waterKey(e)) || e.status === 'paid') return;
         if (!byCustomer[cid]) byCustomer[cid] = 0;
         byCustomer[cid] += e.amount || 0;
@@ -1942,6 +2134,12 @@ window.renderCustomerQueuePosition = async function () {
     if (!posEl) return;
 
     const customerUid = localStorage.getItem('user_uid');
+    const customerPhone = localStorage.getItem('user_phone');
+    if (!customerUid && !customerPhone) {
+        posEl.innerText = '-';
+        return;
+    }
+
     let position = -1;
 
     try {
@@ -1983,12 +2181,13 @@ window.renderCustomerQueuePosition = async function () {
         console.error(e);
     }
 
-    // Local fallback by customerUid on contact
+    // Local fallback by customerUid or phone
     if (position < 0) {
         const queue = getQueue();
+        const customerPhone = localStorage.getItem('user_phone');
         position = queue.findIndex(q => {
             const c = getCustomerById(q.customerId);
-            return c && c.customerUid === customerUid;
+            return c && (c.customerUid === customerUid || (customerPhone && c.phone === customerPhone));
         });
     }
 
@@ -2033,19 +2232,19 @@ window.renderLinkRequests = async function () {
 };
 
 let pendingAcceptLink = null;
+let listenerUnsubs = [];
 
 window.acceptLinkRequest = async function (requestId, customerUid, customerPhone, customerName) {
     const options = getOwnerTubewellOptions();
 
-    if (options.length <= 1) {
-        // Only one tubewell → primary (or the only one)
-        await finishAcceptLinkRequest(
-            requestId,
-            customerUid,
-            customerPhone,
-            customerName,
-            options[0] ? options[0].id : 'primary'
-        );
+    if (options.length === 0) {
+        // No tubewells at all — default to primary
+        await finishAcceptLinkRequest(requestId, customerUid, customerPhone, customerName, 'primary');
+        return;
+    }
+
+    if (options.length === 1) {
+        await finishAcceptLinkRequest(requestId, customerUid, customerPhone, customerName, options[0].id);
         return;
     }
 
@@ -2195,8 +2394,7 @@ function getTubewellDetailsById(tubewellId) {
         };
     }
 
-    const idx = parseInt(String(id).replace('extra_', ''), 10);
-    const tw = extras[idx] || {};
+    const tw = extras.find(e => e.id === id) || {};
     return {
         tubewellId: id,
         tubewellName: tw.name || 'Tubewell',
@@ -2215,18 +2413,22 @@ window.startOwnerListeners = function () {
     const ownerUid = localStorage.getItem('user_uid');
     if (!ownerUid || isMockMode) return;
 
-    // Listen to tubewell changes
+    // Clear any existing
+    stopListeners();
+
+    // Tubewell
     const twRef = doc(db, 'tubewells', ownerUid + '_primary');
-    unsubTubewell = onSnapshot(twRef, (doc) => {
+    unsubTubewell = onSnapshot(twRef, async (doc) => {
         if (doc.exists()) {
             const data = doc.data();
             saveTubewellData(data);
-            renderStatusCard();
+            await renderStatusCard();
             renderTubewells();
         }
     });
+    listenerUnsubs.push(unsubTubewell);
 
-    // Listen to queue changes
+    // Queue
     const queueRef = collection(db, 'queues');
     const q = query(queueRef, where('ownerId', '==', ownerUid));
     unsubQueue = onSnapshot(q, (snapshot) => {
@@ -2236,8 +2438,9 @@ window.startOwnerListeners = function () {
         saveQueue(queue);
         renderQueue();
     });
+    listenerUnsubs.push(unsubQueue);
 
-    // Listen to customers changes
+    // Customers
     const custRef = collection(db, 'customers');
     const cq = query(custRef, where('ownerId', '==', ownerUid));
     unsubCustomers = onSnapshot(cq, (snapshot) => {
@@ -2249,20 +2452,22 @@ window.startOwnerListeners = function () {
         renderBahiCustomers();
         populateCustomerDropdowns();
     });
+    listenerUnsubs.push(unsubCustomers);
 
-    // Listen for new link requests
+    // Link requests
     const reqRef = collection(db, 'link_requests');
     const rq = query(reqRef, where('ownerUid', '==', ownerUid), where('status', '==', 'pending'));
-    onSnapshot(rq, () => {
+    const unsubReq = onSnapshot(rq, () => {
         renderLinkRequests();
     });
+    listenerUnsubs.push(unsubReq);
 
-    // Live sync water_usage → dashboard / pending / Bahi
+    // Water usage sync
     const uq = query(collection(db, 'water_usage'), where('business_id', '==', ownerUid));
-    onSnapshot(uq, () => {
+    const unsubUsage = onSnapshot(uq, () => {
         syncOwnerUsageFromServer();
     });
-    // Initial
+    listenerUnsubs.push(unsubUsage);
     syncOwnerUsageFromServer();
 };
 
@@ -2374,35 +2579,56 @@ window.renderCustomerUsageDashboard = async function () {
                 (a.date || '').localeCompare(b.date || '') ||
                 (a.start_time || '').localeCompare(b.start_time || '')
             );
-            const settledIds = new Set();
-            waterSorted.forEach(r => {
-                const amt = parseFloat(r.amount) || 0;
-                if (creditLeft >= amt) {
-                    settledIds.add(r.id || (r.date + r.start_time + amt));
-                    creditLeft -= amt;
-                }
-            });
+            const { settled: settledIds, partial: partialIds } = getSettledWaterKeys(waterSorted, payments);
 
             Promise.all(water.map(async r => {
                 const { ownerName, twName } = await getOwnerAndTubewell(r.business_id);
-                const key = r.id || (r.date + r.start_time + (r.amount || 0));
-                const isSettled = r.status === 'paid' || settledIds.has(key) || settledIds.has(r.id);
-                return { r, ownerName, twName, isSettled };
+                const wkey = waterKey(r);
+                const isSettled = r.status === 'paid' || settledIds.has(wkey);
+                const isPartial = partialIds.has(wkey);
+                return { r, ownerName, twName, isSettled, isPartial, ownerId: r.business_id };
             })).then(rows => {
-                list.innerHTML = rows.map(({ r, ownerName, twName, isSettled }) => {
-                    const st = isSettled
-                        ? '<span style="font-size:11px;color:var(--ios-green);">PAID</span>'
-                        : '<span style="font-size:11px;color:var(--ios-red);">PENDING</span>';
-                    return '<div class="list-item"><div class="item-info">' +
-                        '<h4>' + (currentLang === 'en' ? 'Water' : 'पानी') + '</h4>' +
-                        '<p>' + (r.date || '') + ' · ' + (r.start_time || '') + ' - ' + (r.end_time || '') +
-                        ' · ' + (r.duration || 0) + ' hrs</p>' +
-                        '<p style="font-size:12px;color:var(--ios-blue);margin-top:2px;">' +
-                        twName + ' · ' + ownerName +
-                        '</p></div>' +
-                        '<div style="text-align:right;"><div class="item-value ' +
-                        (isSettled ? 'text-green' : 'text-red') + '">₹' + (r.amount || 0) +
-                        '</div>' + st + '</div></div>';
+                const currentList = document.getElementById('customer-usage-list');
+                if (!currentList || !currentList.isConnected || currentList !== list) return;
+
+                if (rows.length === 0) {
+                    currentList.innerHTML = '<div class="list-item empty-state"><div class="item-info"><p>' + (currentLang === 'en' ? 'No usage yet' : 'अभी कोई उपयोग नहीं') + '</p></div></div>';
+                    return;
+                }
+
+                // Group by owner
+                const byOwner = {};
+                rows.forEach(row => {
+                    const key = row.ownerId || 'unknown';
+                    if (!byOwner[key]) byOwner[key] = { ownerName: row.ownerName, twName: row.twName, records: [] };
+                    byOwner[key].records.push(row);
+                });
+
+                currentList.innerHTML = Object.entries(byOwner).map(([oid, group]) => {
+                    const header = '<div style="padding: 10px 16px; background: var(--bg); font-size: 13px; font-weight: 600; color: var(--ios-blue); border-bottom: 0.5px solid var(--separator);">' +
+                        (group.twName || 'Tubewell') + ' · ' + (group.ownerName || 'Owner') + '</div>';
+
+                    const items = group.records.map(({ r, ownerName, twName, isSettled, isPartial }) => {
+                        let st;
+                        if (isSettled) {
+                            st = '<span style="font-size:11px;color:var(--ios-green);">PAID</span>';
+                        } else if (isPartial) {
+                            st = '<span style="font-size:11px;color:var(--ios-orange);">PARTIAL</span>';
+                        } else {
+                            st = '<span style="font-size:11px;color:var(--ios-red);">PENDING</span>';
+                        }
+
+                        return '<div class="list-item"><div class="item-info">' +
+                            '<h4>' + (currentLang === 'en' ? 'Water' : 'पानी') + '</h4>' +
+                            '<p>' + (r.date || '') + ' · ' + (r.start_time || '') + ' - ' + (r.end_time || '') +
+                            ' · ' + (r.duration || 0) + ' hrs</p>' +
+                            '</div>' +
+                            '<div style="text-align:right;"><div class="item-value ' +
+                            (isSettled ? 'text-green' : (isPartial ? 'text-orange' : 'text-red')) + '">₹' + (r.amount || 0) +
+                            '</div>' + st + '</div></div>';
+                    }).join('');
+
+                    return header + items;
                 }).join('');
             });
         }
@@ -2421,7 +2647,10 @@ window.renderCustomerUsageDashboard = async function () {
                 const ownerLabel = await getOwnerLabel(r.business_id);
                 return { r, ownerLabel };
             })).then(rows => {
-                payList.innerHTML = rows.map(({ r, ownerLabel }) => {
+                const currentPayList = document.getElementById('customer-payments-list');
+                if (!currentPayList || !currentPayList.isConnected || currentPayList !== payList) return;
+
+                currentPayList.innerHTML = rows.map(({ r, ownerLabel }) => {
                     return '<div class="list-item"><div class="item-info">' +
                         '<h4>' + (r.note || (currentLang === 'en' ? 'Cash' : 'नकद')) + '</h4>' +
                         '<p>' + (r.date || '') + '</p>' +
@@ -2433,6 +2662,16 @@ window.renderCustomerUsageDashboard = async function () {
             });
         }
     }
+};
+
+
+window.openPaymentModal = function (customerId) {
+    if (!customerId) {
+        showToast(currentLang === 'en' ? 'Select a customer first' : 'पहले ग्राहक चुनें', 'error');
+        return;
+    }
+    window.currentCustomerId = customerId;
+    openModal('payment-modal');
 };
 
 /* --- OWNER: SYNC water_usage FROM SERVER INTO LOCAL --- */
@@ -2578,6 +2817,10 @@ window.startCustomerListeners = function () {
 };
 
 window.stopListeners = function () {
+    listenerUnsubs.forEach(function (unsub) {
+        if (typeof unsub === 'function') unsub();
+    });
+    listenerUnsubs = [];
     if (unsubTubewell) { unsubTubewell(); unsubTubewell = null; }
     if (unsubQueue) { unsubQueue(); unsubQueue = null; }
     if (unsubCustomers) { unsubCustomers(); unsubCustomers = null; }
@@ -2754,7 +2997,11 @@ const locales = {
         announcement: "Announcement",
         sendAnnouncement: "Send",
         notesReminder: "Announcement",
-        removeAnnouncement: "Remove"
+        removeAnnouncement: "Remove",
+        editTubewell: "Edit Tubewell",
+        linkedTubewell: "Linked Tubewell",
+        myQueuePosition: "My Queue Position",
+        becomeOwner: "Become an Owner",
     },
     hi: {
         appTitle: "अपना ट्यूबवेल",
@@ -2863,7 +3110,11 @@ const locales = {
         announcement: "घोषणा",
         sendAnnouncement: "भेजें",
         notesReminder: "घोषणा",
-        removeAnnouncement: "हटाएं"
+        removeAnnouncement: "हटाएं",
+        editTubewell: "ट्यूबवेल एडिट करें",
+        linkedTubewell: "जुड़ा हुआ ट्यूबवेल",
+        myQueuePosition: "मेरी कतार में स्थिति",
+        becomeOwner: "मालिक बनें",
     }
 };
 
@@ -3007,7 +3258,9 @@ document.getElementById('send-otp-btn').addEventListener('click', async () => {
 
             // CASE A: role exists → login
             if (existingRoles.includes(userRole)) {
+                // Server-validated login — DOB and phone matched in Firestore
                 localStorage.setItem('is_logged_in', 'true');
+                localStorage.setItem('session_verified_at', new Date().toISOString());
                 localStorage.setItem('user_role', userRole);
                 localStorage.setItem('user_roles', JSON.stringify(existingRoles));
                 localStorage.setItem('user_info', JSON.stringify({
@@ -3650,7 +3903,7 @@ document.getElementById('save-water-btn').addEventListener('click', async () => 
         const payload = {
             business_id: ownerUid,
             customer_id: customerId,
-            customer_uid: cust.customerUid || ('phone_' + (cust.phone || '')),
+            customer_uid: cust.customerUid || '',
             customer_phone: cust.phone || '',
             customer_name: cust.name || '',
             start_time: timeStart.value,
@@ -3706,12 +3959,12 @@ function renderTubewells() {
 
     const primary = getTubewellData();
     const extras = JSON.parse(localStorage.getItem('tubewell_extras') || '[]');
-    const all = (primary.name && !primary.removed) ? [primary].concat(extras) : extras;
+    const all = (primary.name && !primary.removed) ? [{ ...primary, id: 'primary' }].concat(extras) : extras;
 
     const twSelect = document.getElementById('new-customer-tubewell');
     if (twSelect) {
-        twSelect.innerHTML = all.map(function (tw, i) {
-            return '<option value="' + (i === 0 ? 'primary' : 'extra_' + i) + '">' + (tw.name || '') + '</option>';
+        twSelect.innerHTML = all.map(function (tw) {
+            return '<option value="' + (tw.id || 'primary') + '">' + (tw.name || '') + '</option>';
         }).join('');
     }
 
@@ -3721,26 +3974,26 @@ function renderTubewells() {
         return;
     }
 
-    list.innerHTML = all.map(function (tw, i) {
+    list.innerHTML = all.map(function (tw) {
         const st = tw.status || 'stopped';
         let statusText;
         let statusColor;
 
         if (st === 'running') {
-            statusText = '● ' + locales[currentLang].statusRunning; // Occupied
+            statusText = '● ' + locales[currentLang].statusRunning;
             statusColor = 'var(--ios-green)';
         } else if (st === 'work_in_progress') {
-            statusText = '● ' + locales[currentLang].statusWorkInProgress; // Maintenance
+            statusText = '● ' + locales[currentLang].statusWorkInProgress;
             statusColor = '#FF9500';
         } else if (st === 'power_issue') {
             statusText = '● ' + (locales[currentLang].statusPowerIssue || 'Power issue');
             statusColor = '#FF9500';
         } else {
-            statusText = '● ' + locales[currentLang].statusStopped; // Available
+            statusText = '● ' + locales[currentLang].statusStopped;
             statusColor = 'var(--ios-gray)';
         }
 
-        const key = (primary.name && i === 0) ? 'primary' : ('extra_' + (primary.name ? i - 1 : i));
+        const key = tw.id || 'primary';
 
         const mapBtn = tw.mapLink
             ? '<button class="btn-small" style="margin-top: 5px;" onclick="event.stopPropagation(); openTubewellMap(\'' +
@@ -3770,12 +4023,22 @@ window.addNewTubewell = async function () {
     }
     const ownerUid = localStorage.getItem('user_uid');
     const extras = JSON.parse(localStorage.getItem('tubewell_extras') || '[]');
-    const newTw = { name, location, rate, createdAt: new Date().toISOString(), ownerId: ownerUid, status: 'stopped', currentCustomer: null, currentStartTime: null };
+    const twId = 'extra_' + Date.now();
+    const newTw = {
+        id: twId,
+        name,
+        location,
+        rate,
+        createdAt: new Date().toISOString(),
+        ownerId: ownerUid,
+        status: 'stopped',
+        currentCustomer: null,
+        currentStartTime: null
+    };
     extras.push(newTw);
     localStorage.setItem('tubewell_extras', JSON.stringify(extras));
 
-    // Save to Firestore
-    await safeSetDoc(doc(db, 'tubewells', ownerUid + '_extra_' + extras.length), newTw);
+    await safeSetDoc(doc(db, 'tubewells', ownerUid + '_' + twId), newTw);
 
     renderTubewells();
     closeModal('add-tubewell-modal');
@@ -3793,13 +4056,12 @@ function getOwnerTubewellOptions() {
     if (primary.name && !primary.removed) {
         list.push({ id: 'primary', name: primary.name || 'Primary' });
     }
-    extras.forEach(function (tw, i) {
-        if (tw && tw.name) {
-            list.push({ id: 'extra_' + i, name: tw.name });
+    extras.forEach(function (tw) {
+        if (tw && tw.name && tw.id) {
+            list.push({ id: tw.id, name: tw.name });
         }
     });
 
-    // Always at least primary slot if nothing named
     if (list.length === 0) {
         list.push({ id: 'primary', name: primary.name || 'Primary' });
     }
@@ -3812,28 +4074,37 @@ window.currentCustomerId = null;
 const customerData = {
 };
 
+function cleanupCustomerData() {
+    const activeIds = new Set(getCustomers().map(c => c.id));
+    const historyMap = JSON.parse(localStorage.getItem('customer_history') || '{}');
+    const bahiContacts = JSON.parse(localStorage.getItem('bahi_contacts') || '{}');
+
+    Object.keys(customerData).forEach(cid => {
+        // Keep if active customer
+        if (activeIds.has(cid)) return;
+        // Keep if has history
+        if (historyMap[cid] && historyMap[cid].length > 0) return;
+        // Keep if in bahi contacts
+        if (bahiContacts[cid]) return;
+        // Safe to delete
+        delete customerData[cid];
+    });
+}
+
 window.openCustomerDetail = async function (id) {
     window.currentCustomerId = id;
 
-    // Resolve contact + whether their app account is deleted
+    // Resolve fresh name from server first
     const listCust = getCustomerById(id) || {};
-    let accountDeleted = listCust.accountDeleted === true;
+    let displayName = listCust.name || (customerData[id] && customerData[id].name) || 'Customer';
 
-    // Live check from users (optional but accurate)
-    const cuid = listCust.customerUid || (customerData[id] && customerData[id].customerUid);
-    if (cuid) {
+    if (listCust.customerUid) {
         try {
-            const uSnap = await getDoc(doc(db, 'users', cuid));
-            if (uSnap.exists() && uSnap.data().accountStatus === 'deleted') {
-                accountDeleted = true;
-            }
-            // also no customer role
-            if (uSnap.exists()) {
-                const roles = Array.isArray(uSnap.data().roles) ? uSnap.data().roles : [];
-                if (uSnap.data().accountStatus === 'deleted' ||
-                    (!roles.includes('customer') && uSnap.data().role !== 'customer' && roles.length === 0)) {
-                    accountDeleted = true;
-                }
+            const uDoc = await getDoc(doc(db, 'users', listCust.customerUid));
+            if (uDoc.exists() && uDoc.data().accountStatus !== 'deleted') {
+                displayName = uDoc.data().name || displayName;
+                // Update local cache
+                if (customerData[id]) customerData[id].name = displayName;
             }
         } catch (e) { }
     }
@@ -3903,7 +4174,7 @@ window.openCustomerDetail = async function (id) {
 
     const waters = allHistory.filter(e => e.type === 'water');
     const pays = allHistory.filter(e => e.type === 'payment');
-    const settled = getSettledWaterKeys(waters, pays);
+    const { settled, partial } = getSettledWaterKeys(waters, pays);
 
     let totalDue = 0, totalPaid = 0, totalHours = 0, lastEntry = '-';
 
@@ -3911,9 +4182,14 @@ window.openCustomerDetail = async function (id) {
         if (entry.type === 'water') {
             totalHours += entry.duration || 0;
             if (idx === 0) lastEntry = entry.date;
-            const isSettled = entry.status === 'paid' || settled.has(waterKey(entry));
+            const wkey = waterKey(entry);
+            const isSettled = entry.status === 'paid' || settled.has(wkey);
+            const partialDue = partial.get(wkey) || 0;
             if (!isSettled) totalDue += entry.amount || 0;
-            return '<div class="list-item"><div class="item-info"><h4>Water Usage</h4><p>' + entry.date + ' • ' + entry.start + ' - ' + entry.end + ' • ' + entry.duration + ' hrs</p></div><div style="text-align: right;"><div class="item-value ' + (isSettled ? 'text-green' : 'text-red') + '">₹' + entry.amount + '</div><span style="font-size: 11px; color: var(--ios-gray); text-transform: uppercase;">' + (isSettled ? 'paid' : 'pending') + '</span></div></div>';
+            const displayAmount = partialDue > 0 ? partialDue : entry.amount;
+            const statusLabel = isSettled ? 'paid' : (partialDue > 0 ? 'partial' : 'pending');
+            const statusColor = isSettled ? 'text-green' : (partialDue > 0 ? 'text-orange' : 'text-red');
+            return '<div class="list-item"><div class="item-info"><h4>Water Usage</h4><p>' + entry.date + ' • ' + entry.start + ' - ' + entry.end + ' • ' + entry.duration + ' hrs</p></div><div style="text-align: right;"><div class="item-value ' + statusColor + '">₹' + displayAmount + '</div><span style="font-size: 11px; color: var(--ios-gray); text-transform: uppercase;">' + statusLabel + '</span></div></div>';
         } else {
             totalPaid += entry.amount || 0;
             if (idx === 0) lastEntry = entry.date;
@@ -3938,18 +4214,24 @@ window.showView = function (viewId) {
 }
 
 window.savePayment = async function () {
+    if (!window.currentCustomerId) {
+        showToast(currentLang === 'en' ? 'No customer selected' : 'कोई ग्राहक नहीं चुना', 'error');
+        return;
+    }
 
     const amount = parseFloat(document.getElementById('payment-amount').value);
     const date = document.getElementById('payment-date').value;
     const mode = (document.getElementById('payment-mode') || {}).value || 'Cash';
     const note = document.getElementById('payment-note').value.trim();
 
-
     if (!amount || !date) {
         showToast(currentLang === 'en' ? "Enter amount and date" : "राशि और तारीख दर्ज करें", "error");
         return;
     }
-    if (!window.currentCustomerId) return;
+    if (amount <= 0) {
+        showToast(currentLang === 'en' ? "Enter valid amount" : "सही राशि दर्ज करें", "error");
+        return;
+    }
 
     const cCheck = getCustomerById(window.currentCustomerId);
     if (cCheck && cCheck.accountDeleted) {
@@ -3964,7 +4246,7 @@ window.savePayment = async function () {
         await safeAddDoc(collection(db, 'water_usage'), {
             business_id: ownerUid,
             customer_id: window.currentCustomerId,
-            customer_uid: cust.customerUid || ('phone_' + (cust.phone || '')),
+            customer_uid: cust.customerUid || '',
             customer_phone: cust.phone || '',
             customer_name: cust.name || '',
             amount,
@@ -4373,14 +4655,12 @@ window.updateBecomeOwnerButton = async function () {
 };
 
 window.openEditTubewell = function (key) {
-    // key: 'primary' or 'extra_0', 'extra_1', ...
     let tw = {};
     if (key === 'primary') {
         tw = getTubewellData() || {};
     } else {
         const extras = JSON.parse(localStorage.getItem('tubewell_extras') || '[]');
-        const idx = parseInt(String(key).replace('extra_', ''), 10);
-        tw = extras[idx] || {};
+        tw = extras.find(e => e.id === key) || {};
     }
 
     document.getElementById('edit-tw-key').value = key;
@@ -4428,7 +4708,6 @@ window.saveEditTubewell = async function () {
                 mapLink: mapLink
             });
         } catch (e) {
-            // create if missing
             try {
                 await safeSetDoc(doc(db, 'tubewells', ownerUid + '_primary'), {
                     ...tw,
@@ -4443,14 +4722,25 @@ window.saveEditTubewell = async function () {
         }
     } else {
         const extras = JSON.parse(localStorage.getItem('tubewell_extras') || '[]');
-        const idx = parseInt(String(key).replace('extra_', ''), 10);
-        if (extras[idx]) {
-            extras[idx].name = name;
-            extras[idx].rate = rate;
-            extras[idx].location = location;
-            localStorage.setItem('tubewell_extras', JSON.stringify(extras));
+        const idx = extras.findIndex(e => e.id === key);
+        if (idx < 0) {
+            showToast(currentLang === 'en' ? 'Tubewell not found' : 'ट्यूबवेल नहीं मिला', 'error');
+            return;
         }
-        // If you later store extras in Firestore, update there too
+        extras[idx].name = name;
+        extras[idx].rate = rate;
+        extras[idx].location = location;
+        extras[idx].mapLink = mapLink;
+        localStorage.setItem('tubewell_extras', JSON.stringify(extras));
+
+        try {
+            await safeUpdateDoc(doc(db, 'tubewells', ownerUid + '_' + key), {
+                name: name,
+                rate: rate,
+                location: location,
+                mapLink: mapLink
+            });
+        } catch (e) { console.error('extra tw update', e); }
     }
 
     closeModal('edit-tubewell-modal');
@@ -4479,7 +4769,6 @@ async function proceedRemoveTubewell(key) {
 
     try {
         if (key === 'primary') {
-            // Soft-remove primary: mark inactive, clear live status (do NOT delete water_usage)
             const tw = getTubewellData() || {};
             const cleared = {
                 name: '',
@@ -4511,13 +4800,16 @@ async function proceedRemoveTubewell(key) {
                 console.error(e);
             }
         } else {
-            // Extra tubewell — drop from local list
             const extras = JSON.parse(localStorage.getItem('tubewell_extras') || '[]');
-            const idx = parseInt(String(key).replace('extra_', ''), 10);
-            if (!isNaN(idx) && idx >= 0) {
-                extras.splice(idx, 1);
-                localStorage.setItem('tubewell_extras', JSON.stringify(extras));
-            }
+            const filtered = extras.filter(e => e.id !== key);
+            localStorage.setItem('tubewell_extras', JSON.stringify(filtered));
+
+            try {
+                await safeUpdateDoc(doc(db, 'tubewells', ownerUid + '_' + key), {
+                    removed: true,
+                    removedAt: safeServerTimestamp()
+                });
+            } catch (e) { console.error('extra tw remove', e); }
         }
 
         // Unlink all customers of this owner (keep water_usage)

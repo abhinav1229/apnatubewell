@@ -5,6 +5,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="default">
     <link rel="icon" type="image/svg+xml"
         href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='22' fill='%23007AFF'/><rect x='40' y='35' width='20' height='45' rx='3' fill='white'/><path d='M50 35V22M50 22h22' stroke='white' stroke-width='8' stroke-linecap='round'/><circle cx='50' cy='22' r='6' fill='white'/><path d='M35 80h30' stroke='white' stroke-width='6' stroke-linecap='round'/></svg>">
@@ -350,7 +351,7 @@
                 </div>
             </div>
 
-            <h3 class="section-title mt-4" data-i18n="quickActions">Quick Actions</h3>
+            <!-- <h3 class="section-title mt-4" data-i18n="quickActions">Quick Actions</h3>
             <div class="action-buttons">
                 <button class="btn-action primary-action" onclick="openModal('water-modal')">
                     <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -366,7 +367,7 @@
                     </svg>
                     <span data-i18n="payment">Payment</span>
                 </button>
-            </div>
+            </div> -->
 
             <h3 class="section-title mt-4" data-i18n="notesReminder">Announcement</h3>
             <div class="list-card" style="margin-bottom:16px;">
@@ -1180,8 +1181,11 @@
         </div>
     </div>
 
-
+    <!-- For Production: -->
     <script type="module" src="app.js"></script>
+
+    <!-- For Testing: -->
+    <!-- <script type="module" src="read.js"></script> -->
 </body>
 
 </html>

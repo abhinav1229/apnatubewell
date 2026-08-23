@@ -464,7 +464,7 @@
             </div>
 
             <h3 class="section-title">Ledger</h3>
-            <div class="list-card" id="bahi-ledger-list"></div>
+            <div class="list-card list-card--invoices" id="bahi-ledger-list"></div>
         </main>
 
         <!-- TUBEWELLS VIEW -->
@@ -520,7 +520,7 @@
             </div>
 
             <h3 class="section-title">History</h3>
-            <div id="customer-history-list" class="list-card"></div>
+            <div id="customer-history-list" class="list-card list-card--invoices"></div>
         </main>
 
         <!-- CUSTOMER USAGE VIEW -->
@@ -546,14 +546,21 @@
                 </div>
             </div>
 
-            <h3 class="section-title">Usage History</h3>
-            <div class="list-card" id="customer-usage-list">
-                <div class="list-item empty-state">
-                    <div class="item-info">
-                        <p>No usage yet</p>
-                    </div>
-                </div>
-            </div>
+            <!-- Only bills that need Approve / Mistake -->
+            <h3 class="section-title" id="cust-pending-approvals-title" style="display:none;">
+                Needs your approval
+            </h3>
+            <div class="list-card list-card--invoices" id="customer-pending-approvals-list"
+                style="display:none;margin-bottom:16px;"></div>
+
+            <!-- Go to full history -->
+            <button type="button" class="btn-primary"
+                style="width:100%;margin-bottom:20px;padding:16px;font-size:16px;display:flex;align-items:center;justify-content:center;gap:10px;"
+                onclick="openCustomerUsageHistory()">
+                <span style="font-size:20px;">📋</span>
+                <span data-i18n="viewUsageHistory">View usage history</span>
+                <span style="margin-left:auto;opacity:0.8;">›</span>
+            </button>
 
             <!-- Linked Tubewell -->
             <div style="margin: 24px 0; padding: 16px; background: var(--card); border-radius: 12px;">
@@ -579,6 +586,28 @@
             </div>
         </main>
 
+        <!-- CUSTOMER FULL USAGE HISTORY -->
+        <main id="view-customer-usage-history" class="main-view pb-nav customer-only">
+            <div style="display:flex;align-items:center;gap:12px;margin-bottom:16px;">
+                <button type="button" class="close-btn" onclick="showView('view-customer-usage')"
+                    style="position:static;flex-shrink:0;" aria-label="Back">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                        stroke-width="2.5">
+                        <polyline points="15 18 9 12 15 6"></polyline>
+                    </svg>
+                </button>
+                <h3 class="section-title mb-0" style="margin:0;">Usage History</h3>
+            </div>
+
+            <div class="list-card list-card--invoices" id="customer-usage-list">
+                <div class="list-item empty-state">
+                    <div class="item-info">
+                        <p>No usage yet</p>
+                    </div>
+                </div>
+            </div>
+        </main>
+
         <!-- CUSTOMER TUBEWELL INFO VIEW -->
         <main id="view-my-tubewell" class="main-view pb-nav customer-only">
             <h3 class="section-title">My Tubewell</h3>
@@ -594,7 +623,7 @@
         <!-- CUSTOMER PAYMENTS VIEW -->
         <main id="view-my-payments" class="main-view pb-nav customer-only">
             <h3 class="section-title">My Payments</h3>
-            <div class="list-card" id="customer-payments-list">
+            <div class="list-card list-card--invoices" id="customer-payments-list">
                 <div class="list-item empty-state">
                     <div class="item-info">
                         <p>No payments yet</p>

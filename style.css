@@ -729,6 +729,25 @@ button {
     white-space: nowrap;
 }
 
+/* Invoice / receipt lists — no outer box; cards provide their own frame */
+.list-card.list-card--invoices {
+    background: transparent;
+    border: none;
+    box-shadow: none;
+    border-radius: 0;
+    overflow: visible;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    /* space between invoices */
+}
+
+.list-card.list-card--invoices>div {
+    /* invoices already have margin-bottom in JS; gap is enough */
+    margin-bottom: 0 !important;
+}
+
 /* ===== MODALS ===== */
 .modal-overlay {
     position: fixed;

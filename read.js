@@ -1292,7 +1292,6 @@ window.openBahiLedger = async function (id) {
     const ownerUid = localStorage.getItem('user_uid');
     if (!ownerUid) return;
 
-    // ---------- Resolve display name ----------
     let displayName = 'Customer';
     const active = (typeof getCustomers === 'function' ? getCustomers() : []).find(c => c.id === id);
     const bahiContacts = JSON.parse(localStorage.getItem('bahi_contacts') || '{}');
@@ -1316,9 +1315,8 @@ window.openBahiLedger = async function (id) {
 
     document.getElementById('bahi-ledger-name').innerText = displayName;
 
-    // ---------- Firebase only ----------
-    list.innerHTML = '<div class="list-item empty-state"><div class="item-info"><p>' +
-        (currentLang === 'en' ? 'Loading…' : 'लोड हो रहा है…') + '</p></div></div>';
+    list.innerHTML = '<div style="padding:24px;text-align:center;color:var(--ios-gray);">' +
+        (currentLang === 'en' ? 'Loading…' : 'लोड हो रहा है…') + '</div>';
     showView('view-bahi-ledger');
 
     function toMs(created_at, created_at_ms, date) {
@@ -1344,25 +1342,16 @@ window.openBahiLedger = async function (id) {
             const r = d.data();
             if (r.type === 'payment') {
                 history.push({
-                    id: d.id,
-                    type: 'payment',
-                    date: r.date || '',
-                    amount: r.amount,
-                    mode: r.mode || 'Cash',
-                    note: r.note || '',
+                    id: d.id, type: 'payment', date: r.date || '', amount: r.amount,
+                    mode: r.mode || 'Cash', note: r.note || '',
                     created_at: r.created_at || null,
                     created_at_ms: toMs(r.created_at, r.created_at_ms, r.date)
                 });
             } else {
                 history.push({
-                    id: d.id,
-                    type: 'water',
-                    date: r.date || '',
-                    start: r.start_time || r.start || '',
-                    end: r.end_time || r.end || '',
-                    duration: r.duration,
-                    rate: r.rate,
-                    amount: r.amount,
+                    id: d.id, type: 'water', date: r.date || '',
+                    start: r.start_time || r.start || '', end: r.end_time || r.end || '',
+                    duration: r.duration, rate: r.rate, amount: r.amount,
                     status: r.status || 'pending',
                     approval_status: r.approval_status || 'awaiting_approval',
                     created_at: r.created_at || null,
@@ -1371,21 +1360,20 @@ window.openBahiLedger = async function (id) {
             }
         });
     } catch (e) {
-        console.error('openBahiLedger Firebase load failed', e);
-        list.innerHTML = '<div class="list-item empty-state"><div class="item-info"><p>' +
-            (currentLang === 'en' ? 'Could not load ledger' : 'लेजर लोड नहीं हुआ') + '</p></div></div>';
+        console.error('openBahiLedger load failed', e);
+        list.innerHTML = '<div style="padding:24px;text-align:center;color:var(--ios-red);">' +
+            (currentLang === 'en' ? 'Could not load ledger' : 'लेजर लोड नहीं हुआ') + '</div>';
         return;
     }
 
     if (history.length === 0) {
-        list.innerHTML = '<div class="list-item empty-state"><div class="item-info"><p>No entries yet.</p></div></div>';
+        list.innerHTML = '<div style="padding:28px;text-align:center;color:var(--ios-gray);">No entries yet.</div>';
         document.getElementById('bahi-total-due').innerText = '₹0';
         document.getElementById('bahi-total-paid').innerText = '₹0';
         document.getElementById('bahi-balance').innerText = '₹0';
         return;
     }
 
-    // Totals: approved water + all payments
     const watersApproved = history.filter(e => e.type === 'water' && isApprovedForLedger(e));
     const pays = history.filter(e => e.type === 'payment');
     const allWaterAmt = watersApproved.reduce((s, w) => s + (parseFloat(w.amount) || 0), 0);
@@ -1393,13 +1381,8 @@ window.openBahiLedger = async function (id) {
     const netDue = Math.max(0, allWaterAmt - allPaidAmt);
     const finalBalance = allWaterAmt - allPaidAmt;
 
-    // Settlement for status badges (Pending / Partial / Paid) — display only
-    const { settled, partial } = getSettledWaterKeys(
-        sortOldestFirst(watersApproved),
-        pays
-    );
+    const { settled, partial } = getSettledWaterKeys(sortOldestFirst(watersApproved), pays);
 
-    // Running balance: approved water + payments, oldest → newest
     const forBalance = history.filter(e =>
         e.type === 'payment' || (e.type === 'water' && isApprovedForLedger(e))
     );
@@ -1407,18 +1390,34 @@ window.openBahiLedger = async function (id) {
     let runningBalance = 0;
     const balanceById = {};
     sortedAsc.forEach(entry => {
-        if (entry.type === 'water') {
-            runningBalance += parseFloat(entry.amount) || 0;
-        } else {
-            runningBalance -= parseFloat(entry.amount) || 0;
-        }
+        if (entry.type === 'water') runningBalance += parseFloat(entry.amount) || 0;
+        else runningBalance -= parseFloat(entry.amount) || 0;
         balanceById[entry.id] = runningBalance;
     });
 
-    // Display: newest first
     const displayOrder = sortNewestFirst(history);
 
-    const ledgerRows = displayOrder.map((entry) => {
+    function formatDuration(hours) {
+        const totalMinutes = Math.round((parseFloat(hours) || 0) * 60);
+        const h = Math.floor(totalMinutes / 60);
+        const m = totalMinutes % 60;
+        if (currentLang === 'hi') {
+            if (h > 0 && m > 0) return h + ' घंटा ' + m + ' मिनट';
+            if (h > 0) return h + ' घंटा';
+            return m + ' मिनट';
+        }
+        if (h > 0 && m > 0) return h + ' hr ' + m + ' min';
+        if (h > 0) return h + (h === 1 ? ' hr' : ' hrs');
+        return m + ' min';
+    }
+
+    function rowLine(label, value) {
+        return '<div style="display:flex;justify-content:space-between;align-items:center;padding:10px 0;border-bottom:1px solid var(--separator);">' +
+            '<span style="font-size:14px;color:var(--ios-gray);">' + label + '</span>' +
+            '<span style="font-size:15px;font-weight:700;text-align:right;">' + value + '</span></div>';
+    }
+
+    list.innerHTML = displayOrder.map((entry) => {
         const olderCount = history.filter(h => {
             const d = entryTimestamp(h) - entryTimestamp(entry);
             if (d < 0) return true;
@@ -1427,141 +1426,125 @@ window.openBahiLedger = async function (id) {
         }).length;
         const entryNum = olderCount + 1;
 
-        const isWater = entry.type === 'water';
         const approved = isApprovedForLedger(entry);
         const bal = (approved && balanceById[entry.id] != null) ? balanceById[entry.id] : null;
 
-        let durationText = '';
-        if (isWater) {
-            const totalMinutes = Math.round((entry.duration || 0) * 60);
-            const durHours = Math.floor(totalMinutes / 60);
-            const durMins = totalMinutes % 60;
-            if (currentLang === 'hi') {
-                if (durHours > 0 && durMins > 0) durationText = durHours + ' घंटा ' + durMins + ' मिनट';
-                else if (durHours > 0) durationText = durHours + ' घंटा';
-                else durationText = durMins + ' मिनट';
-            } else {
-                if (durHours > 0 && durMins > 0) durationText = durHours + ' hr ' + durMins + ' min';
-                else if (durHours > 0) durationText = durHours + (durHours === 1 ? ' hr' : ' hrs');
-                else durationText = durMins + ' min';
-            }
-        }
-
-        if (isWater) {
-            const approvalStatus = entry.approval_status || 'approved';
+        if (entry.type === 'water') {
             const wkey = waterKey(entry);
             const isSettled = entry.status === 'paid' || settled.has(wkey);
             const partialDue = partial.get(wkey) || 0;
+            const originalAmount = parseFloat(entry.amount) || 0;
+            const approvalStatus = entry.approval_status || 'awaiting_approval';
 
-            // --- Status badge: approval first, then collection status ---
-            let statusLabel, statusColor, statusBg, borderColor;
-
+            let statusText, stampColor, stampBg;
             if (approvalStatus === 'awaiting_approval') {
-                statusLabel = currentLang === 'en' ? '⏳ Awaiting approval' : '⏳ स्वीकृति बाकी';
-                statusColor = '#FF9500'; statusBg = 'rgba(255,149,0,0.12)'; borderColor = '#FF9500';
+                statusText = currentLang === 'en' ? 'WAITING FOR CUSTOMER' : 'स्वीकृति बाकी';
+                stampColor = '#FF9500'; stampBg = 'rgba(255,149,0,0.12)';
             } else if (approvalStatus === 'rejected') {
-                statusLabel = currentLang === 'en' ? '❌ Rejected' : '❌ अस्वीकृत';
-                statusColor = '#FF3B30'; statusBg = 'rgba(255,59,48,0.12)'; borderColor = '#FF3B30';
+                statusText = currentLang === 'en' ? 'REJECTED' : 'अस्वीकृत';
+                stampColor = '#FF3B30'; stampBg = 'rgba(255,59,48,0.12)';
             } else if (isSettled) {
-                // Paid via payments (or status paid)
-                statusLabel = currentLang === 'en' ? '✅ Paid' : '✅ चुकाया';
-                statusColor = '#34C759'; statusBg = 'rgba(52,199,89,0.10)'; borderColor = '#34C759';
+                statusText = currentLang === 'en' ? 'PAID' : 'चुकाया';
+                stampColor = '#34C759'; stampBg = 'rgba(52,199,89,0.12)';
             } else if (partialDue > 0) {
-                statusLabel = currentLang === 'en'
-                    ? ('🟠 Partial · due ₹' + partialDue)
-                    : ('🟠 आंशिक · बाकी ₹' + partialDue);
-                statusColor = '#FF9500'; statusBg = 'rgba(255,149,0,0.12)'; borderColor = '#FF9500';
+                statusText = currentLang === 'en' ? 'PARTIAL' : 'आंशिक';
+                stampColor = '#FF9500'; stampBg = 'rgba(255,149,0,0.12)';
             } else {
-                statusLabel = currentLang === 'en' ? '🔴 Pending' : '🔴 बाकी';
-                statusColor = '#FF3B30'; statusBg = 'rgba(255,59,48,0.10)'; borderColor = '#FF3B30';
+                statusText = currentLang === 'en' ? 'DUE' : 'बाकी';
+                stampColor = '#FF3B30'; stampBg = 'rgba(255,59,48,0.12)';
             }
 
-            const originalAmount = entry.amount || 0;
+            const paidSoFar = isSettled ? originalAmount : Math.max(0, originalAmount - (partialDue || 0));
+            const dueNow = isSettled ? 0 : (partialDue > 0 ? partialDue : (approved ? originalAmount : 0));
 
             const balanceFooter = bal == null
-                ? '<div style="display:flex;justify-content:space-between;align-items:center;padding-top:8px;border-top:1px dashed var(--separator);">' +
-                '<span style="font-size:12px;color:var(--ios-gray);font-weight:500;">' +
-                (currentLang === 'en' ? 'Not in balance yet' : 'अभी बाकी में नहीं') + '</span>' +
-                '<span style="font-size:14px;font-weight:600;color:var(--ios-gray);">' +
-                (currentLang === 'en' ? 'Waiting for approval' : 'स्वीकृति का इंतजार') + '</span></div>'
-                : '<div style="display:flex;justify-content:space-between;align-items:center;padding-top:8px;border-top:1px dashed var(--separator);">' +
-                '<span style="font-size:12px;color:var(--ios-gray);font-weight:500;">' +
+                ? '<div style="padding:12px 18px;border-top:1px dashed var(--separator);font-size:13px;color:var(--ios-gray);">' +
+                (currentLang === 'en' ? 'Not in running balance yet (waiting approval)' : 'अभी चालू बाकी में नहीं (स्वीकृति बाकी)') + '</div>'
+                : '<div style="padding:12px 18px;border-top:1px dashed var(--separator);display:flex;justify-content:space-between;align-items:center;">' +
+                '<span style="font-size:13px;color:var(--ios-gray);font-weight:600;">' +
                 (currentLang === 'en' ? 'Balance after this' : 'इसके बाद बाकी') + '</span>' +
-                '<span style="font-size:16px;font-weight:700;color:' +
-                (bal > 0 ? '#FF3B30' : (bal < 0 ? '#34C759' : 'var(--ios-gray)')) + ';">₹' +
-                Math.abs(bal) + ' ' +
+                '<span style="font-size:18px;font-weight:800;color:' +
+                (bal > 0 ? '#FF3B30' : (bal < 0 ? '#34C759' : 'var(--ios-gray)')) + ';">₹' + Math.abs(bal) + ' ' +
                 (bal > 0 ? (currentLang === 'en' ? 'Due' : 'बाकी') :
                     bal < 0 ? (currentLang === 'en' ? 'Advance' : 'जमा') :
                         (currentLang === 'en' ? 'Clear' : 'बराबर')) + '</span></div>';
 
-            return '<div class="list-item" style="flex-direction:column;align-items:stretch;gap:12px;padding:16px;border-left:4px solid ' + borderColor + ';">' +
-                '<div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">' +
-                '<span style="font-size:12px;font-weight:600;color:var(--ios-gray);background:var(--bg);padding:4px 10px;border-radius:10px;">#' + entryNum + ' · ' +
-                (currentLang === 'en' ? '💧 Water Bill' : '💧 पानी का बिल') + '</span>' +
-                '<span style="font-size:13px;font-weight:700;color:' + statusColor + ';background:' + statusBg + ';padding:6px 14px;border-radius:20px;">' + statusLabel + '</span></div>' +
-                '<div style="display:flex;align-items:center;justify-content:space-between;">' +
-                '<div style="font-size:36px;font-weight:800;color:' + (approved ? '#FF3B30' : 'var(--ios-gray)') + ';letter-spacing:-1px;">₹' + originalAmount + '</div>' +
+            return (
+                '<div style="margin:0 0 20px 0;background:var(--card);border-radius:16px;border:1px solid var(--separator);overflow:hidden;box-shadow:0 2px 8px rgba(0,0,0,0.06);">' +
+                '<div style="padding:16px 18px;background:var(--bg);border-bottom:1px solid var(--separator);display:flex;justify-content:space-between;align-items:flex-start;gap:12px;">' +
+                '<div>' +
+                '<div style="font-size:11px;font-weight:700;letter-spacing:0.06em;color:var(--ios-gray);text-transform:uppercase;">' +
+                '#' + entryNum + ' · ' + (currentLang === 'en' ? 'Water invoice' : 'पानी का बिल') + '</div>' +
+                '<div style="font-size:15px;font-weight:700;margin-top:4px;">' + displayName + '</div>' +
+                '</div>' +
                 '<div style="text-align:right;">' +
-                '<div style="font-size:13px;color:var(--ios-gray);font-weight:500;">' +
+                '<div style="font-size:12px;color:var(--ios-gray);">' + (currentLang === 'en' ? 'Date' : 'तारीख') + '</div>' +
+                '<div style="font-size:15px;font-weight:700;">' + (entry.date || '—') + '</div>' +
+                '</div></div>' +
+                '<div style="padding:10px 18px;background:' + stampBg + ';border-bottom:1px solid var(--separator);">' +
+                '<span style="font-size:13px;font-weight:800;letter-spacing:0.04em;color:' + stampColor + ';">' + statusText + '</span></div>' +
+                '<div style="padding:8px 18px 0;">' +
+                rowLine(currentLang === 'en' ? 'Start time' : 'शुरू समय', entry.start || '—') +
+                rowLine(currentLang === 'en' ? 'End time' : 'बंद समय', entry.end || '—') +
+                rowLine(currentLang === 'en' ? 'Duration' : 'अवधि', formatDuration(entry.duration)) +
+                rowLine(currentLang === 'en' ? 'Rate' : 'रेट', '₹' + (entry.rate || 0) + (currentLang === 'en' ? ' / hour' : ' / घंटा')) +
+                '</div>' +
+                '<div style="margin:12px 18px;border-top:1px dashed var(--separator);"></div>' +
+                '<div style="padding:0 18px 12px;">' +
+                '<div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:8px;">' +
+                '<span style="font-size:14px;color:var(--ios-gray);font-weight:600;">' + (currentLang === 'en' ? 'Bill amount' : 'बिल राशि') + '</span>' +
+                '<span style="font-size:28px;font-weight:800;">₹' + originalAmount + '</span></div>' +
+                (approved && paidSoFar > 0
+                    ? '<div style="display:flex;justify-content:space-between;margin-bottom:6px;">' +
+                    '<span style="font-size:14px;color:var(--ios-gray);">' + (currentLang === 'en' ? 'Paid so far' : 'अब तक चुकाया') + '</span>' +
+                    '<span style="font-size:16px;font-weight:700;color:#34C759;">− ₹' + paidSoFar + '</span></div>'
+                    : '') +
                 (approved
-                    ? (currentLang === 'en' ? 'Total bill' : 'कुल बिल')
-                    : (currentLang === 'en' ? 'Not confirmed yet' : 'अभी पुष्टि नहीं')) +
-                '</div></div></div>' +
-                '<div style="display:flex;align-items:center;gap:10px;"><span style="font-size:18px;">📅</span>' +
-                '<span style="font-size:16px;font-weight:600;color:var(--text);">' + entry.date + '</span></div>' +
-                '<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">' +
-                '<div style="background:var(--bg);padding:12px;border-radius:12px;text-align:center;">' +
-                '<div style="font-size:11px;color:var(--ios-gray);font-weight:600;text-transform:uppercase;margin-bottom:4px;">' +
-                (currentLang === 'en' ? '▶️ Start' : '▶️ शुरू') + '</div>' +
-                '<div style="font-size:22px;font-weight:700;color:var(--text);">' + (entry.start || '-') + '</div></div>' +
-                '<div style="background:var(--bg);padding:12px;border-radius:12px;text-align:center;">' +
-                '<div style="font-size:11px;color:var(--ios-gray);font-weight:600;text-transform:uppercase;margin-bottom:4px;">' +
-                (currentLang === 'en' ? '⏹️ End' : '⏹️ बंद') + '</div>' +
-                '<div style="font-size:22px;font-weight:700;color:var(--text);">' + (entry.end || '-') + '</div></div></div>' +
-                '<div style="display:flex;align-items:center;gap:10px;background:var(--bg);padding:10px 14px;border-radius:10px;">' +
-                '<span style="font-size:18px;">⏱️</span>' +
-                '<span style="font-size:15px;font-weight:600;color:var(--ios-blue);">' + durationText + '</span>' +
-                '<span style="font-size:12px;color:var(--ios-gray);margin-left:auto;">@ ₹' + (entry.rate || 0) +
-                (currentLang === 'en' ? '/hr' : '/घंटा') + '</span></div>' +
-                balanceFooter +
-                '</div>';
+                    ? '<div style="display:flex;justify-content:space-between;align-items:baseline;padding-top:8px;border-top:2px solid var(--text);">' +
+                    '<span style="font-size:15px;font-weight:700;">' + (currentLang === 'en' ? 'On this bill' : 'इस बिल पर') + '</span>' +
+                    '<span style="font-size:22px;font-weight:800;color:' + (dueNow > 0 ? '#FF3B30' : '#34C759') + ';">₹' + dueNow +
+                    (dueNow > 0 ? (currentLang === 'en' ? ' due' : ' बाकी') : (currentLang === 'en' ? ' clear' : ' बराबर')) + '</span></div>'
+                    : '') +
+                '</div>' + balanceFooter + '</div>'
+            );
         }
 
-        // PAYMENT
+        // Payment
         const modeLabel = entry.mode || 'Cash';
         const modeEmoji = modeLabel === 'Cash' ? '💵' : (modeLabel === 'UPI' ? '📱' : '💳');
         const balVal = bal != null ? bal : 0;
 
-        return '<div class="list-item" style="flex-direction:column;align-items:stretch;gap:12px;padding:16px;border-left:4px solid #34C759;">' +
-            '<div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">' +
-            '<span style="font-size:12px;font-weight:600;color:var(--ios-gray);background:var(--bg);padding:4px 10px;border-radius:10px;">#' + entryNum + ' · ' + modeEmoji + ' ' +
-            (currentLang === 'en' ? 'Payment' : 'भुगतान') + '</span>' +
-            '<span style="font-size:13px;font-weight:700;color:#34C759;background:rgba(52,199,89,0.10);padding:6px 14px;border-radius:20px;">' +
-            (currentLang === 'en' ? '✅ Received' : '✅ प्राप्त') + '</span></div>' +
-            '<div style="display:flex;align-items:center;justify-content:space-between;">' +
-            '<div style="font-size:36px;font-weight:800;color:#34C759;letter-spacing:-1px;">₹' + (entry.amount || 0) + '</div>' +
-            '<div style="text-align:right;"><div style="font-size:13px;color:var(--ios-gray);font-weight:500;">' +
-            (currentLang === 'en' ? 'You paid' : 'आपने दिया') + '</div></div></div>' +
-            '<div style="display:flex;align-items:center;gap:10px;"><span style="font-size:18px;">📅</span>' +
-            '<span style="font-size:16px;font-weight:600;color:var(--text);">' + entry.date + '</span></div>' +
-            '<div style="display:flex;align-items:center;gap:10px;background:var(--bg);padding:10px 14px;border-radius:10px;">' +
-            '<span style="font-size:16px;">' + modeEmoji + '</span>' +
-            '<span style="font-size:15px;font-weight:600;color:var(--text);">' + modeLabel + '</span>' +
-            (entry.note ? '<span style="font-size:13px;color:var(--ios-gray);margin-left:auto;">📝 ' + entry.note + '</span>' : '') +
+        return (
+            '<div style="margin:0 0 20px 0;background:var(--card);border-radius:16px;border:1px solid var(--separator);overflow:hidden;box-shadow:0 2px 8px rgba(0,0,0,0.06);">' +
+            '<div style="padding:16px 18px;background:var(--bg);border-bottom:1px solid var(--separator);display:flex;justify-content:space-between;align-items:flex-start;">' +
+            '<div>' +
+            '<div style="font-size:11px;font-weight:700;letter-spacing:0.06em;color:var(--ios-gray);text-transform:uppercase;">' +
+            '#' + entryNum + ' · ' + (currentLang === 'en' ? 'Payment receipt' : 'भुगतान रसीद') + '</div>' +
+            '<div style="font-size:15px;font-weight:700;margin-top:4px;">' + modeEmoji + ' ' + modeLabel + '</div>' +
             '</div>' +
-            '<div style="display:flex;justify-content:space-between;align-items:center;padding-top:8px;border-top:1px dashed var(--separator);">' +
-            '<span style="font-size:12px;color:var(--ios-gray);font-weight:500;">' +
+            '<div style="text-align:right;">' +
+            '<div style="font-size:12px;color:var(--ios-gray);">' + (currentLang === 'en' ? 'Date' : 'तारीख') + '</div>' +
+            '<div style="font-size:15px;font-weight:700;">' + (entry.date || '—') + '</div>' +
+            '</div></div>' +
+            '<div style="padding:10px 18px;background:rgba(52,199,89,0.12);border-bottom:1px solid var(--separator);">' +
+            '<span style="font-size:13px;font-weight:800;letter-spacing:0.04em;color:#34C759;">' +
+            (currentLang === 'en' ? 'RECEIVED' : 'प्राप्त') + '</span></div>' +
+            '<div style="padding:18px;text-align:center;">' +
+            '<div style="font-size:12px;color:var(--ios-gray);font-weight:600;text-transform:uppercase;margin-bottom:6px;">' +
+            (currentLang === 'en' ? 'Amount received' : 'प्राप्त राशि') + '</div>' +
+            '<div style="font-size:36px;font-weight:800;color:#34C759;">₹' + (entry.amount || 0) + '</div></div>' +
+            (entry.note ? '<div style="padding:0 18px 12px;font-size:14px;color:var(--ios-gray);">📝 ' + entry.note + '</div>' : '') +
+            '<div style="padding:12px 18px;border-top:1px dashed var(--separator);display:flex;justify-content:space-between;align-items:center;">' +
+            '<span style="font-size:13px;color:var(--ios-gray);font-weight:600;">' +
             (currentLang === 'en' ? 'Balance after this' : 'इसके बाद बाकी') + '</span>' +
-            '<span style="font-size:16px;font-weight:700;color:' +
-            (balVal > 0 ? '#FF3B30' : (balVal < 0 ? '#34C759' : 'var(--ios-gray)')) + ';">₹' +
-            Math.abs(balVal) + ' ' +
+            '<span style="font-size:18px;font-weight:800;color:' +
+            (balVal > 0 ? '#FF3B30' : (balVal < 0 ? '#34C759' : 'var(--ios-gray)')) + ';">₹' + Math.abs(balVal) + ' ' +
             (balVal > 0 ? (currentLang === 'en' ? 'Due' : 'बाकी') :
                 balVal < 0 ? (currentLang === 'en' ? 'Advance' : 'जमा') :
-                    (currentLang === 'en' ? 'Clear' : 'बराबर')) +
-            '</span></div></div>';
+                    (currentLang === 'en' ? 'Clear' : 'बराबर')) + '</span></div></div>'
+        );
     }).join('');
 
-    list.innerHTML = ledgerRows;
     document.getElementById('bahi-total-due').innerText = '₹' + Math.round(netDue);
     document.getElementById('bahi-total-paid').innerText = '₹' + Math.round(allPaidAmt);
     document.getElementById('bahi-balance').innerText = '₹' + Math.round(Math.abs(finalBalance)) +
@@ -2817,15 +2800,16 @@ async function getOwnerAndTubewell(businessId) {
 window.renderCustomerUsageDashboard = async function () {
     const records = await loadCustomerUsageFromServer();
 
-    // Totals: approved water only
     const water = records.filter(r =>
         (r.type === 'water' || (!r.type && r.duration != null)) && isApprovedForLedger(r)
     );
-    // List: all water (including awaiting / rejected)
     const waterAll = records.filter(r =>
         r.type === 'water' || (!r.type && r.duration != null)
     );
     const payments = records.filter(r => r.type === 'payment');
+    const awaiting = waterAll.filter(r =>
+        (r.approval_status || 'awaiting_approval') === 'awaiting_approval'
+    );
 
     let totalHrs = 0;
     water.forEach(r => { totalHrs += parseFloat(r.duration) || 0; });
@@ -2834,7 +2818,6 @@ window.renderCustomerUsageDashboard = async function () {
     const netDue = Math.max(0, allWaterAmt - totalPaid);
     const balance = allWaterAmt - totalPaid;
 
-    // Header stats (support both old and new ids)
     const setTxt = (id, val) => { const el = document.getElementById(id); if (el) el.innerText = val; };
     const setHtml = (id, val) => { const el = document.getElementById(id); if (el) el.innerHTML = val; };
 
@@ -2843,236 +2826,257 @@ window.renderCustomerUsageDashboard = async function () {
     setTxt('cust-total-paid-display', '₹' + Math.round(totalPaid));
     setTxt('bahi-total-due', '₹' + Math.round(netDue));
     setTxt('bahi-total-paid', '₹' + Math.round(totalPaid));
-    setTxt('bahi-balance', '₹' + Math.round(Math.abs(balance)));
+    setTxt('bahi-balance', '₹' + Math.round(Math.abs(balance)) +
+        (balance > 0 ? (currentLang === 'en' ? ' Due' : ' बाकी') :
+            balance < 0 ? (currentLang === 'en' ? ' Advance' : ' जमा') : ''));
 
     const balHint = document.getElementById('bahi-balance-hint');
     if (balHint) {
         if (balance > 0) {
-            balHint.innerText = currentLang === 'en' ? 'You still need to pay' : 'आपको अभी भी देना है';
+            balHint.innerText = currentLang === 'en' ? 'You still need to pay this much' : 'आपको इतना अभी देना है';
             balHint.style.color = '#FF3B30';
         } else if (balance < 0) {
             balHint.innerText = currentLang === 'en' ? 'You paid extra (advance)' : 'आपने ज्यादा दिया (जमा)';
             balHint.style.color = '#34C759';
         } else {
-            balHint.innerText = currentLang === 'en' ? 'All clear!' : 'सब बराबर!';
+            balHint.innerText = currentLang === 'en' ? 'All clear — nothing due' : 'सब बराबर — कुछ बाकी नहीं';
             balHint.style.color = 'var(--ios-gray)';
         }
     }
 
-    // Settlement on approved water only
     const { settled, partial } = getSettledWaterKeys(sortOldestFirst(water), payments);
 
-    // ---------- WATER LIST (My Usage) ----------
+    function formatDuration(hours) {
+        const totalMinutes = Math.round((parseFloat(hours) || 0) * 60);
+        const h = Math.floor(totalMinutes / 60);
+        const m = totalMinutes % 60;
+        if (currentLang === 'hi') {
+            if (h > 0 && m > 0) return h + ' घंटा ' + m + ' मिनट';
+            if (h > 0) return h + ' घंटा';
+            return m + ' मिनट';
+        }
+        if (h > 0 && m > 0) return h + ' hr ' + m + ' min';
+        if (h > 0) return h + (h === 1 ? ' hr' : ' hrs');
+        return m + ' min';
+    }
+
+    /** One water bill as a receipt / invoice card */
+    function waterInvoiceHtml(r, opts) {
+        const showActions = opts && opts.showActions;
+        const approvalStatus = r.approval_status || 'awaiting_approval';
+        const wkey = waterKey(r);
+        const isSettled = r.status === 'paid' || settled.has(wkey);
+        const partialDue = partial.get(wkey) || 0;
+        const originalAmount = parseFloat(r.amount) || 0;
+        const rate = parseFloat(r.rate) || 0;
+        const durationText = formatDuration(r.duration);
+        const startT = r.start_time || r.start || '—';
+        const endT = r.end_time || r.end || '—';
+        const ownerName = (opts && opts.ownerName) || '';
+        const twName = (opts && opts.twName) || '';
+        const approved = isApprovedForLedger(r);
+
+        let statusText, statusColor, stampColor, stampBg;
+        if (approvalStatus === 'awaiting_approval') {
+            statusText = currentLang === 'en' ? 'WAITING FOR APPROVAL' : 'स्वीकृति बाकी';
+            statusColor = '#FF9500'; stampColor = '#FF9500'; stampBg = 'rgba(255,149,0,0.12)';
+        } else if (approvalStatus === 'rejected') {
+            statusText = currentLang === 'en' ? 'MARKED AS MISTAKE' : 'गलती मानी';
+            statusColor = '#FF3B30'; stampColor = '#FF3B30'; stampBg = 'rgba(255,59,48,0.12)';
+        } else if (isSettled) {
+            statusText = currentLang === 'en' ? 'PAID' : 'चुकाया';
+            statusColor = '#34C759'; stampColor = '#34C759'; stampBg = 'rgba(52,199,89,0.12)';
+        } else if (partialDue > 0) {
+            statusText = currentLang === 'en' ? 'PARTIAL' : 'आंशिक';
+            statusColor = '#FF9500'; stampColor = '#FF9500'; stampBg = 'rgba(255,149,0,0.12)';
+        } else {
+            statusText = currentLang === 'en' ? 'DUE' : 'बाकी';
+            statusColor = '#FF3B30'; stampColor = '#FF3B30'; stampBg = 'rgba(255,59,48,0.12)';
+        }
+
+        const paidSoFar = isSettled ? originalAmount : Math.max(0, originalAmount - partialDue);
+        const dueNow = isSettled ? 0 : (partialDue > 0 ? partialDue : (approvalStatus === 'approved' ? originalAmount : 0));
+
+        let actionsHtml = '';
+        if (showActions && approvalStatus === 'awaiting_approval') {
+            actionsHtml =
+                '<div style="display:flex;gap:10px;padding:16px 18px 18px;border-top:1px dashed var(--separator);">' +
+                '<button type="button" style="flex:1;padding:14px;font-size:16px;font-weight:700;border:none;border-radius:12px;background:#34C759;color:#fff;" onclick="approveWaterEntry(\'' + (r.id || '') + '\')">' +
+                (currentLang === 'en' ? '✅ Approve' : '✅ स्वीकार करें') + '</button>' +
+                '<button type="button" style="flex:1;padding:14px;font-size:16px;font-weight:700;border:none;border-radius:12px;background:#FF3B30;color:#fff;" onclick="rejectWaterEntry(\'' + (r.id || '') + '\')">' +
+                (currentLang === 'en' ? '❌ Mistake' : '❌ गलती') + '</button>' +
+                '</div>';
+        }
+
+        return (
+            '<div style="margin:0 0 20px 0;background:var(--card);border-radius:16px;border:1px solid var(--separator);overflow:hidden;box-shadow:0 2px 8px rgba(0,0,0,0.06);">' +
+
+            // Receipt header
+            '<div style="padding:16px 18px;background:var(--bg);border-bottom:1px solid var(--separator);display:flex;justify-content:space-between;align-items:flex-start;gap:12px;">' +
+            '<div>' +
+            '<div style="font-size:11px;font-weight:700;letter-spacing:0.06em;color:var(--ios-gray);text-transform:uppercase;">' +
+            (currentLang === 'en' ? 'Water invoice' : 'पानी का बिल') + '</div>' +
+            '<div style="font-size:15px;font-weight:700;margin-top:4px;">' + (twName || (currentLang === 'en' ? 'Tubewell' : 'ट्यूबवेल')) + '</div>' +
+            (ownerName
+                ? '<div style="font-size:13px;color:var(--ios-gray);margin-top:2px;">' +
+                (currentLang === 'en' ? 'Owner: ' : 'मालिक: ') + ownerName + '</div>'
+                : '') +
+            '</div>' +
+            '<div style="text-align:right;">' +
+            '<div style="font-size:12px;color:var(--ios-gray);">' + (currentLang === 'en' ? 'Date' : 'तारीख') + '</div>' +
+            '<div style="font-size:15px;font-weight:700;">' + (r.date || '—') + '</div>' +
+            '</div></div>' +
+
+            // Status stamp
+            '<div style="padding:10px 18px;background:' + stampBg + ';border-bottom:1px solid var(--separator);">' +
+            '<span style="font-size:13px;font-weight:800;letter-spacing:0.04em;color:' + stampColor + ';">' + statusText + '</span>' +
+            '</div>' +
+
+            // Line items (invoice rows)
+            '<div style="padding:8px 18px 0;">' +
+            rowLine(currentLang === 'en' ? 'Start time' : 'शुरू समय', startT) +
+            rowLine(currentLang === 'en' ? 'End time' : 'बंद समय', endT) +
+            rowLine(currentLang === 'en' ? 'Duration' : 'अवधि', durationText) +
+            rowLine(currentLang === 'en' ? 'Rate' : 'रेट', '₹' + rate + (currentLang === 'en' ? ' / hour' : ' / घंटा')) +
+            '</div>' +
+
+            // Dashed divider like a receipt
+            '<div style="margin:12px 18px;border-top:1px dashed var(--separator);"></div>' +
+
+            // Totals block
+            '<div style="padding:0 18px 16px;">' +
+            '<div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:8px;">' +
+            '<span style="font-size:14px;color:var(--ios-gray);font-weight:600;">' +
+            (currentLang === 'en' ? 'Bill amount' : 'बिल राशि') + '</span>' +
+            '<span style="font-size:28px;font-weight:800;color:var(--text);letter-spacing:-0.5px;">₹' + originalAmount + '</span>' +
+            '</div>' +
+            (approved && paidSoFar > 0
+                ? '<div style="display:flex;justify-content:space-between;margin-bottom:6px;">' +
+                '<span style="font-size:14px;color:var(--ios-gray);">' + (currentLang === 'en' ? 'Paid so far' : 'अब तक चुकाया') + '</span>' +
+                '<span style="font-size:16px;font-weight:700;color:#34C759;">− ₹' + paidSoFar + '</span></div>'
+                : '') +
+            (approved
+                ? '<div style="display:flex;justify-content:space-between;align-items:baseline;padding-top:8px;border-top:2px solid var(--text);">' +
+                '<span style="font-size:15px;font-weight:700;">' +
+                (currentLang === 'en' ? 'Balance due' : 'बाकी राशि') + '</span>' +
+                '<span style="font-size:26px;font-weight:800;color:' + (dueNow > 0 ? '#FF3B30' : '#34C759') + ';">₹' + dueNow + '</span></div>'
+                : (approvalStatus === 'awaiting_approval'
+                    ? '<div style="font-size:13px;color:#FF9500;font-weight:600;margin-top:4px;">' +
+                    (currentLang === 'en' ? 'Confirm this bill to add it to your balance' : 'बिल स्वीकार करें — तब बाकी में जुड़ेगा') + '</div>'
+                    : '')) +
+            '</div>' +
+
+            actionsHtml +
+            '</div>'
+        );
+    }
+
+    function rowLine(label, value) {
+        return (
+            '<div style="display:flex;justify-content:space-between;align-items:center;padding:10px 0;border-bottom:1px solid var(--separator);">' +
+            '<span style="font-size:14px;color:var(--ios-gray);">' + label + '</span>' +
+            '<span style="font-size:15px;font-weight:700;color:var(--text);text-align:right;">' + value + '</span>' +
+            '</div>'
+        );
+    }
+
+    function paymentReceiptHtml(r, ownerLabel) {
+        const modeLabel = r.mode || r.note || (currentLang === 'en' ? 'Cash' : 'नकद');
+        const modeEmoji = (modeLabel === 'Cash' || modeLabel === 'नकद') ? '💵'
+            : (modeLabel === 'UPI' ? '📱' : '💳');
+
+        return (
+            '<div style="margin:0 0 20px 0;background:var(--card);border-radius:16px;border:1px solid var(--separator);overflow:hidden;box-shadow:0 2px 8px rgba(0,0,0,0.06);">' +
+            '<div style="padding:16px 18px;background:var(--bg);border-bottom:1px solid var(--separator);display:flex;justify-content:space-between;align-items:flex-start;">' +
+            '<div>' +
+            '<div style="font-size:11px;font-weight:700;letter-spacing:0.06em;color:var(--ios-gray);text-transform:uppercase;">' +
+            (currentLang === 'en' ? 'Payment receipt' : 'भुगतान रसीद') + '</div>' +
+            '<div style="font-size:15px;font-weight:700;margin-top:4px;">' + modeEmoji + ' ' + modeLabel + '</div>' +
+            '</div>' +
+            '<div style="text-align:right;">' +
+            '<div style="font-size:12px;color:var(--ios-gray);">' + (currentLang === 'en' ? 'Date' : 'तारीख') + '</div>' +
+            '<div style="font-size:15px;font-weight:700;">' + (r.date || '—') + '</div>' +
+            '</div></div>' +
+            '<div style="padding:10px 18px;background:rgba(52,199,89,0.12);border-bottom:1px solid var(--separator);">' +
+            '<span style="font-size:13px;font-weight:800;letter-spacing:0.04em;color:#34C759;">' +
+            (currentLang === 'en' ? 'RECEIVED' : 'प्राप्त') + '</span></div>' +
+            '<div style="padding:18px;text-align:center;">' +
+            '<div style="font-size:12px;color:var(--ios-gray);font-weight:600;text-transform:uppercase;margin-bottom:6px;">' +
+            (currentLang === 'en' ? 'Amount paid' : 'चुकाई राशि') + '</div>' +
+            '<div style="font-size:36px;font-weight:800;color:#34C759;letter-spacing:-1px;">₹' + (r.amount || 0) + '</div>' +
+            '</div>' +
+            '<div style="padding:0 18px 18px;">' +
+            rowLine(currentLang === 'en' ? 'Paid to' : 'किसे दिया', ownerLabel || '—') +
+            '</div></div>'
+        );
+    }
+
+    // A) Pending approvals (My Usage home)
+    const pendingBox = document.getElementById('customer-pending-approvals-list');
+    const pendingTitle = document.getElementById('cust-pending-approvals-title');
+    if (pendingBox) {
+        if (awaiting.length === 0) {
+            pendingBox.style.display = 'none';
+            pendingBox.innerHTML = '';
+            if (pendingTitle) pendingTitle.style.display = 'none';
+        } else {
+            pendingBox.style.display = '';
+            if (pendingTitle) {
+                pendingTitle.style.display = '';
+                pendingTitle.innerText = currentLang === 'en'
+                    ? ('Needs your approval (' + awaiting.length + ')')
+                    : ('स्वीकृति दें (' + awaiting.length + ')');
+            }
+            pendingBox.innerHTML = sortNewestFirst(awaiting)
+                .map(r => waterInvoiceHtml(r, { showActions: true }))
+                .join('');
+        }
+    }
+
+    // B) Full usage history
     const list = document.getElementById('customer-usage-list');
     if (list) {
         if (waterAll.length === 0) {
-            list.innerHTML = '<div class="list-item empty-state"><div class="item-info"><p>' +
-                (currentLang === 'en' ? 'No usage yet' : 'अभी कोई उपयोग नहीं') + '</p></div></div>';
+            list.innerHTML =
+                '<div style="padding:28px;text-align:center;color:var(--ios-gray);font-size:15px;">' +
+                (currentLang === 'en' ? 'No invoices yet' : 'अभी कोई बिल नहीं') + '</div>';
         } else {
             const waterNewest = sortNewestFirst(waterAll);
-
             Promise.all(waterNewest.map(async r => {
-                const { ownerName, twName } = await getOwnerAndTubewell(r.business_id);
-                return { r, ownerName, twName, ownerId: r.business_id };
+                const meta = typeof getOwnerAndTubewell === 'function'
+                    ? await getOwnerAndTubewell(r.business_id)
+                    : { ownerName: 'Owner', twName: 'Tubewell' };
+                return { r, ownerName: meta.ownerName, twName: meta.twName };
             })).then(rows => {
                 const currentList = document.getElementById('customer-usage-list');
                 if (!currentList || !currentList.isConnected || currentList !== list) return;
-
-                const byOwner = {};
-                rows.forEach(row => {
-                    const key = row.ownerId || 'unknown';
-                    if (!byOwner[key]) {
-                        byOwner[key] = { ownerName: row.ownerName, twName: row.twName, records: [] };
-                    }
-                    byOwner[key].records.push(row);
-                });
-
-                currentList.innerHTML = Object.entries(byOwner).map(([oid, grp]) => {
-                    const header =
-                        '<div style="padding:12px 16px;background:var(--bg);font-size:13px;font-weight:600;color:var(--ios-blue);border-bottom:0.5px solid var(--separator);">' +
-                        (grp.twName || 'Tubewell') + ' · ' + (grp.ownerName || 'Owner') +
-                        '</div>';
-
-                    const items = grp.records.map(({ r }) => {
-                        const approvalStatus = r.approval_status || 'awaiting_approval';
-                        const wkey = waterKey(r);
-                        const isSettled = r.status === 'paid' || settled.has(wkey);
-                        const partialDue = partial.get(wkey) || 0;
-                        const originalAmount = r.amount || 0;
-                        const approved = isApprovedForLedger(r);
-
-                        // Approval badge + actions
-                        let statusBadgeHtml = '';
-                        let actionButtons = '';
-
-                        if (approvalStatus === 'awaiting_approval') {
-                            statusBadgeHtml =
-                                '<span style="display:inline-block;font-size:13px;font-weight:600;color:#FF9500;background:rgba(255,149,0,0.10);padding:6px 14px;border-radius:20px;">' +
-                                (currentLang === 'en' ? '⏳ Awaiting your approval' : '⏳ आपकी स्वीकृति का इंतजार') +
-                                '</span>';
-                            actionButtons =
-                                '<div style="display:flex;gap:8px;margin-top:4px;width:100%;">' +
-                                '<button class="btn-small" style="background:var(--ios-green);flex:1;padding:12px;font-size:15px;" onclick="approveWaterEntry(\'' + (r.id || '') + '\')">' +
-                                (currentLang === 'en' ? '✅ Approve' : '✅ स्वीकार करें') + '</button>' +
-                                '<button class="btn-small" style="background:var(--ios-red);flex:1;padding:12px;font-size:15px;" onclick="rejectWaterEntry(\'' + (r.id || '') + '\')">' +
-                                (currentLang === 'en' ? '❌ Mistake' : '❌ गलती') + '</button>' +
-                                '</div>';
-                        } else if (approvalStatus === 'approved') {
-                            statusBadgeHtml =
-                                '<span style="display:inline-block;font-size:13px;font-weight:600;color:#34C759;background:rgba(52,199,89,0.10);padding:6px 14px;border-radius:20px;">' +
-                                (currentLang === 'en' ? '✅ Approved' : '✅ स्वीकृत') +
-                                '</span>';
-                        } else if (approvalStatus === 'rejected') {
-                            statusBadgeHtml =
-                                '<span style="display:inline-block;font-size:13px;font-weight:600;color:#FF3B30;background:rgba(255,59,48,0.10);padding:6px 14px;border-radius:20px;">' +
-                                (currentLang === 'en' ? '❌ You marked as mistake' : '❌ आपने गलती मानी') +
-                                '</span>';
-                        }
-
-                        // Collection status (only meaningful after approval)
-                        let payLabel, payColor, payBg, stillDueLine = '';
-                        if (!approved) {
-                            payLabel = currentLang === 'en' ? 'NOT CONFIRMED' : 'अभी पुष्टि नहीं';
-                            payColor = '#8E8E93';
-                            payBg = 'rgba(142,142,147,0.12)';
-                        } else if (isSettled) {
-                            payLabel = currentLang === 'en' ? 'PAID' : 'चुकाया';
-                            payColor = '#34C759';
-                            payBg = 'rgba(52,199,89,0.10)';
-                        } else if (partialDue > 0) {
-                            payLabel = currentLang === 'en' ? 'PARTIAL' : 'आंशिक';
-                            payColor = '#FF9500';
-                            payBg = 'rgba(255,149,0,0.10)';
-                            stillDueLine =
-                                '<div style="margin-top:8px;font-size:14px;font-weight:600;color:#FF9500;">' +
-                                (currentLang === 'en' ? 'Still due: ₹' : 'अभी बाकी: ₹') + partialDue +
-                                '</div>';
-                        } else {
-                            payLabel = currentLang === 'en' ? 'PENDING' : 'बाकी';
-                            payColor = '#FF3B30';
-                            payBg = 'rgba(255,59,48,0.10)';
-                        }
-
-                        // Duration text
-                        const totalMinutes = Math.round((r.duration || 0) * 60);
-                        const durHours = Math.floor(totalMinutes / 60);
-                        const durMins = totalMinutes % 60;
-                        let durationText = '';
-                        if (currentLang === 'hi') {
-                            if (durHours > 0 && durMins > 0) durationText = durHours + ' घंटा ' + durMins + ' मिनट';
-                            else if (durHours > 0) durationText = durHours + ' घंटा';
-                            else durationText = durMins + ' मिनट';
-                        } else {
-                            if (durHours > 0 && durMins > 0) durationText = durHours + ' hr ' + durMins + ' min';
-                            else if (durHours > 0) durationText = durHours + (durHours === 1 ? ' hr' : ' hrs');
-                            else durationText = durMins + ' min';
-                        }
-
-                        return '<div class="list-item" style="flex-direction:column;align-items:stretch;gap:12px;padding:16px;">' +
-
-                            // Header
-                            '<div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">' +
-                            '<h4 style="font-size:18px;font-weight:700;">' +
-                            (currentLang === 'en' ? '💧 Water Usage' : '💧 पानी का उपयोग') + '</h4>' +
-                            statusBadgeHtml +
-                            '</div>' +
-
-                            // Big amount = ORIGINAL bill
-                            '<div style="display:flex;align-items:center;justify-content:space-between;background:' + payBg + ';padding:14px 16px;border-radius:14px;">' +
-                            '<div>' +
-                            '<div style="font-size:32px;font-weight:800;color:' + payColor + ';letter-spacing:-0.5px;">₹' + originalAmount + '</div>' +
-                            '<div style="font-size:13px;color:' + payColor + ';font-weight:600;margin-top:2px;text-transform:uppercase;">' + payLabel + '</div>' +
-                            stillDueLine +
-                            '</div>' +
-                            '<div style="text-align:right;">' +
-                            '<div style="font-size:14px;color:var(--ios-gray);font-weight:500;">' +
-                            (currentLang === 'en' ? 'Total Bill' : 'कुल बिल') + '</div>' +
-                            '</div></div>' +
-
-                            // Date
-                            '<div style="display:flex;align-items:center;gap:10px;">' +
-                            '<span style="font-size:20px;">📅</span>' +
-                            '<span style="font-size:16px;font-weight:600;">' + (r.date || '') + '</span>' +
-                            '</div>' +
-
-                            // Start / End
-                            '<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">' +
-                            '<div style="background:var(--bg);padding:12px;border-radius:12px;">' +
-                            '<div style="font-size:12px;color:var(--ios-gray);font-weight:500;text-transform:uppercase;margin-bottom:4px;">' +
-                            (currentLang === 'en' ? '▶️ Started' : '▶️ शुरू') + '</div>' +
-                            '<div style="font-size:20px;font-weight:700;">' + (r.start_time || r.start || '-') + '</div>' +
-                            '</div>' +
-                            '<div style="background:var(--bg);padding:12px;border-radius:12px;">' +
-                            '<div style="font-size:12px;color:var(--ios-gray);font-weight:500;text-transform:uppercase;margin-bottom:4px;">' +
-                            (currentLang === 'en' ? '⏹️ Ended' : '⏹️ बंद') + '</div>' +
-                            '<div style="font-size:20px;font-weight:700;">' + (r.end_time || r.end || '-') + '</div>' +
-                            '</div></div>' +
-
-                            // Duration
-                            '<div style="display:flex;align-items:center;gap:10px;background:var(--bg);padding:12px 16px;border-radius:12px;">' +
-                            '<span style="font-size:20px;">⏱️</span>' +
-                            '<div>' +
-                            '<div style="font-size:12px;color:var(--ios-gray);font-weight:500;">' +
-                            (currentLang === 'en' ? 'Total Time' : 'कुल समय') + '</div>' +
-                            '<div style="font-size:18px;font-weight:700;color:var(--ios-blue);">' + durationText + '</div>' +
-                            '</div></div>' +
-
-                            // Rate
-                            '<div style="font-size:13px;color:var(--ios-gray);">' +
-                            '₹' + (r.rate || 0) + (currentLang === 'en' ? '/hour rate' : '/घंटे का रेट') +
-                            '</div>' +
-
-                            actionButtons +
-                            '</div>';
-                    }).join('');
-
-                    return header + items;
-                }).join('');
+                currentList.innerHTML = rows.map(({ r, ownerName, twName }) =>
+                    waterInvoiceHtml(r, { showActions: true, ownerName, twName })
+                ).join('');
             });
         }
     }
 
-    // ---------- PAYMENTS LIST ----------
+    // C) Payments
     const payList = document.getElementById('customer-payments-list');
     if (payList) {
         if (payments.length === 0) {
-            payList.innerHTML = '<div class="list-item empty-state"><div class="item-info"><p>' +
-                (currentLang === 'en' ? 'No payments yet' : 'अभी कोई भुगतान नहीं') +
-                '</p></div></div>';
+            payList.innerHTML =
+                '<div style="padding:28px;text-align:center;color:var(--ios-gray);font-size:15px;">' +
+                (currentLang === 'en' ? 'No payment receipts yet' : 'अभी कोई रसीद नहीं') + '</div>';
         } else {
             const paymentsNewest = sortNewestFirst(payments);
             Promise.all(paymentsNewest.map(async r => {
-                const ownerLabel = await getOwnerLabel(r.business_id);
+                const ownerLabel = typeof getOwnerLabel === 'function'
+                    ? await getOwnerLabel(r.business_id)
+                    : 'Owner';
                 return { r, ownerLabel };
             })).then(rows => {
                 const currentPayList = document.getElementById('customer-payments-list');
                 if (!currentPayList || !currentPayList.isConnected || currentPayList !== payList) return;
-
-                currentPayList.innerHTML = rows.map(({ r, ownerLabel }) => {
-                    const modeLabel = r.mode || r.note || (currentLang === 'en' ? 'Cash' : 'नकद');
-                    const modeEmoji = modeLabel === 'Cash' || modeLabel === 'नकद' ? '💵' :
-                        (modeLabel === 'UPI' ? '📱' : '💳');
-
-                    return '<div class="list-item" style="flex-direction:column;align-items:stretch;gap:10px;padding:16px;">' +
-                        '<div style="display:flex;justify-content:space-between;align-items:center;">' +
-                        '<h4 style="font-size:18px;font-weight:700;">' + modeEmoji + ' ' +
-                        (currentLang === 'en' ? 'Payment' : 'भुगतान') + '</h4>' +
-                        '<span style="display:inline-block;font-size:13px;font-weight:600;color:#34C759;background:rgba(52,199,89,0.10);padding:6px 14px;border-radius:20px;">' +
-                        (currentLang === 'en' ? '✅ Paid' : '✅ चुकाया') + '</span>' +
-                        '</div>' +
-                        '<div style="display:flex;align-items:center;justify-content:space-between;background:rgba(52,199,89,0.08);padding:14px 16px;border-radius:14px;">' +
-                        '<div style="font-size:32px;font-weight:800;color:#34C759;">₹' + (r.amount || 0) + '</div>' +
-                        '<div style="text-align:right;font-size:14px;color:var(--ios-gray);font-weight:500;">' + modeLabel + '</div>' +
-                        '</div>' +
-                        '<div style="display:flex;align-items:center;gap:10px;">' +
-                        '<span style="font-size:20px;">📅</span>' +
-                        '<span style="font-size:16px;font-weight:600;">' + (r.date || '') + '</span>' +
-                        '</div>' +
-                        '<div style="font-size:13px;color:var(--ios-blue);">' +
-                        (currentLang === 'en' ? 'To: ' : 'को: ') + ownerLabel +
-                        '</div>' +
-                        '</div>';
-                }).join('');
+                currentPayList.innerHTML = rows.map(({ r, ownerLabel }) =>
+                    paymentReceiptHtml(r, ownerLabel)
+                ).join('');
             });
         }
     }
@@ -5746,7 +5750,7 @@ window.openCustomerDetail = async function (id) {
                 if (nameEl && nameEl.parentNode) nameEl.parentNode.insertBefore(ban, nameEl.nextSibling);
             }
             ban.innerText = currentLang === 'en'
-                ? 'This customer deleted their account. \n History only can be visible. Other actions are disabled.'
+                ? 'This customer deleted their account.\nHistory only — other actions disabled.'
                 : 'इस ग्राहक ने खाता हटा दिया है। केवल इतिहास — कार्य बंद।';
             ban.style.display = 'block';
         } else if (ban) {
@@ -5754,23 +5758,16 @@ window.openCustomerDetail = async function (id) {
         }
     }
 
-    const cust = customerData[id];
-    if (!cust) {
-        const customers = getCustomers();
-        const found = customers.find(c => c.id === id);
-        if (found) {
-            customerData[id] = { name: found.name, phone: found.phone, history: [] };
-        } else {
-            return;
-        }
+    if (!customerData[id]) {
+        const found = getCustomers().find(c => c.id === id);
+        if (found) customerData[id] = { name: found.name, phone: found.phone, history: [] };
+        else return;
     }
 
     await syncOwnerUsageFromServer();
 
     const historyList = document.getElementById('customer-history-list');
     const sortedHistory = sortNewestFirst(customerData[id].history || []);
-
-    // Dedupe by Firebase id
     const seen = new Set();
     const uniqueHistory = sortedHistory.filter(e => {
         const key = e.id || (e.date + '|' + (e.start || '') + '|' + e.amount + '|' + e.type);
@@ -5782,7 +5779,8 @@ window.openCustomerDetail = async function (id) {
     document.getElementById('customer-detail-name').innerText = displayName || customerData[id].name;
 
     if (uniqueHistory.length === 0) {
-        historyList.innerHTML = '<div class="list-item"><div class="item-info"><p style="color: var(--ios-gray);">No entries yet.</p></div></div>';
+        historyList.innerHTML = '<div style="padding:28px;text-align:center;color:var(--ios-gray);">' +
+            (currentLang === 'en' ? 'No entries yet' : 'अभी कोई एंट्री नहीं') + '</div>';
         document.getElementById('cust-total-due').innerText = '₹0';
         document.getElementById('cust-total-paid').innerText = '₹0';
         document.getElementById('cust-total-hours').innerHTML = '0 <small>Hrs</small>';
@@ -5791,166 +5789,146 @@ window.openCustomerDetail = async function (id) {
         return;
     }
 
-    // Settlement: oldest-first, display-only (never mutates entry.amount)
-    const waters = sortOldestFirst(
-        uniqueHistory.filter(e => e.type === 'water' && isApprovedForLedger(e))
-    );
+    const waters = sortOldestFirst(uniqueHistory.filter(e => e.type === 'water' && isApprovedForLedger(e)));
     const pays = uniqueHistory.filter(e => e.type === 'payment');
     const { settled, partial } = getSettledWaterKeys(waters, pays);
 
     let totalDue = 0, totalPaid = 0, totalHours = 0, lastEntry = '-';
 
+    function formatDuration(hours) {
+        const totalMinutes = Math.round((parseFloat(hours) || 0) * 60);
+        const h = Math.floor(totalMinutes / 60);
+        const m = totalMinutes % 60;
+        if (currentLang === 'hi') {
+            if (h > 0 && m > 0) return h + ' घंटा ' + m + ' मिनट';
+            if (h > 0) return h + ' घंटा';
+            return m + ' मिनट';
+        }
+        if (h > 0 && m > 0) return h + ' hr ' + m + ' min';
+        if (h > 0) return h + (h === 1 ? ' hr' : ' hrs');
+        return m + ' min';
+    }
+
+    function rowLine(label, value) {
+        return '<div style="display:flex;justify-content:space-between;align-items:center;padding:10px 0;border-bottom:1px solid var(--separator);">' +
+            '<span style="font-size:14px;color:var(--ios-gray);">' + label + '</span>' +
+            '<span style="font-size:15px;font-weight:700;color:var(--text);text-align:right;">' + value + '</span></div>';
+    }
+
     historyList.innerHTML = uniqueHistory.map((entry, idx) => {
         if (entry.type === 'water') {
-            if (isApprovedForLedger(entry)) {
-                totalHours += entry.duration || 0;
-            }
+            if (isApprovedForLedger(entry)) totalHours += entry.duration || 0;
             if (idx === 0) lastEntry = entry.date;
 
             const wkey = waterKey(entry);
             const isSettled = entry.status === 'paid' || settled.has(wkey);
             const partialDue = partial.get(wkey) || 0;
-
-            // Totals: remaining due only
-            if (isApprovedForLedger(entry) && !isSettled) {
-                totalDue += partialDue > 0 ? partialDue : (entry.amount || 0);
-            }
-
-            // ALWAYS show original bill amount
-            const originalAmount = entry.amount || 0;
+            const originalAmount = parseFloat(entry.amount) || 0;
+            const approved = isApprovedForLedger(entry);
             const approvalStatus = entry.approval_status || 'awaiting_approval';
 
-            let statusBadgeHtml = '';
-            let editButton = '';
+            if (approved && !isSettled) {
+                totalDue += partialDue > 0 ? partialDue : originalAmount;
+            }
 
+            let statusText, stampColor, stampBg;
             if (approvalStatus === 'awaiting_approval') {
-                statusBadgeHtml = '<span style="display:inline-block;font-size:13px;font-weight:600;color:#FF9500;background:rgba(255,149,0,0.10);padding:6px 14px;border-radius:20px;">' +
-                    (currentLang === 'en' ? '⏳ Waiting for customer approval' : '⏳ ग्राहक की स्वीकृति का इंतजार') + '</span>';
-                editButton = '<button class="btn-small" style="margin-top:10px;padding:10px 20px;font-size:15px;background:var(--ios-blue);" onclick="openEditWaterModal(\'' + (entry.id || '') + '\')">' +
-                    (currentLang === 'en' ? '✏️ Edit Entry' : '✏️ एडिट करें') + '</button>';
-            } else if (approvalStatus === 'approved') {
-                statusBadgeHtml = '<span style="display:inline-block;font-size:13px;font-weight:600;color:#34C759;background:rgba(52,199,89,0.10);padding:6px 14px;border-radius:20px;">' +
-                    (currentLang === 'en' ? '✅ Approved by customer' : '✅ ग्राहक ने स्वीकार किया') + '</span>';
+                statusText = currentLang === 'en' ? 'WAITING FOR CUSTOMER' : 'ग्राहक की स्वीकृति बाकी';
+                stampColor = '#FF9500'; stampBg = 'rgba(255,149,0,0.12)';
             } else if (approvalStatus === 'rejected') {
-                statusBadgeHtml = '<span style="display:inline-block;font-size:13px;font-weight:600;color:#FF3B30;background:rgba(255,59,48,0.10);padding:6px 14px;border-radius:20px;">' +
-                    (currentLang === 'en' ? '❌ Customer rejected — please edit' : '❌ ग्राहक ने अस्वीकार किया — एडिट करें') + '</span>';
-                editButton = '<button class="btn-small" style="margin-top:10px;padding:10px 20px;font-size:15px;background:var(--ios-blue);" onclick="openEditWaterModal(\'' + (entry.id || '') + '\')">' +
-                    (currentLang === 'en' ? '✏️ Edit Entry' : '✏️ एडिट करें') + '</button>';
-            }
-
-            // Payment status on original bill
-            let statusLabel, statusColor, statusBg, stillDueLine = '';
-            if (isSettled) {
-                statusLabel = currentLang === 'en' ? 'PAID' : 'चुकाया';
-                statusColor = '#34C759';
-                statusBg = 'rgba(52,199,89,0.10)';
+                statusText = currentLang === 'en' ? 'CUSTOMER REJECTED — EDIT' : 'ग्राहक ने अस्वीकार किया';
+                stampColor = '#FF3B30'; stampBg = 'rgba(255,59,48,0.12)';
+            } else if (isSettled) {
+                statusText = currentLang === 'en' ? 'PAID' : 'चुकाया';
+                stampColor = '#34C759'; stampBg = 'rgba(52,199,89,0.12)';
             } else if (partialDue > 0) {
-                statusLabel = currentLang === 'en' ? 'PARTIAL' : 'आंशिक';
-                statusColor = '#FF9500';
-                statusBg = 'rgba(255,149,0,0.10)';
-                stillDueLine =
-                    '<div style="margin-top:8px;font-size:14px;font-weight:600;color:#FF9500;">' +
-                    (currentLang === 'en' ? 'Still due: ₹' : 'अभी बाकी: ₹') + partialDue +
-                    '</div>';
+                statusText = currentLang === 'en' ? 'PARTIAL' : 'आंशिक';
+                stampColor = '#FF9500'; stampBg = 'rgba(255,149,0,0.12)';
             } else {
-                statusLabel = currentLang === 'en' ? 'PENDING' : 'बाकी';
-                statusColor = '#FF3B30';
-                statusBg = 'rgba(255,59,48,0.10)';
+                statusText = currentLang === 'en' ? 'DUE' : 'बाकी';
+                stampColor = '#FF3B30'; stampBg = 'rgba(255,59,48,0.12)';
             }
 
-            const totalMinutes = Math.round((entry.duration || 0) * 60);
-            const durHours = Math.floor(totalMinutes / 60);
-            const durMins = totalMinutes % 60;
-            let durationText = '';
-            if (currentLang === 'hi') {
-                if (durHours > 0 && durMins > 0) durationText = durHours + ' घंटा ' + durMins + ' मिनट';
-                else if (durHours > 0) durationText = durHours + ' घंटा';
-                else durationText = durMins + ' मिनट';
-            } else {
-                if (durHours > 0 && durMins > 0) durationText = durHours + ' hr ' + durMins + ' min';
-                else if (durHours > 0) durationText = durHours + (durHours === 1 ? ' hr' : ' hrs');
-                else durationText = durMins + ' min';
+            const paidSoFar = isSettled ? originalAmount : Math.max(0, originalAmount - (partialDue || 0));
+            const dueNow = isSettled ? 0 : (partialDue > 0 ? partialDue : (approved ? originalAmount : 0));
+
+            let editBtn = '';
+            if (approvalStatus === 'awaiting_approval' || approvalStatus === 'rejected') {
+                editBtn =
+                    '<div style="padding:16px 18px 18px;border-top:1px dashed var(--separator);">' +
+                    '<button type="button" style="width:100%;padding:14px;font-size:16px;font-weight:700;border:none;border-radius:12px;background:var(--ios-blue);color:#fff;" onclick="openEditWaterModal(\'' + (entry.id || '') + '\')">' +
+                    (currentLang === 'en' ? '✏️ Edit entry' : '✏️ एडिट करें') + '</button></div>';
             }
 
-            return '<div class="list-item" style="flex-direction:column;align-items:stretch;gap:12px;padding:16px;">' +
-
-                '<div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">' +
-                '<h4 style="font-size:18px;font-weight:700;color:var(--text);">' +
-                (currentLang === 'en' ? '💧 Water Usage' : '💧 पानी का उपयोग') + '</h4>' +
-                statusBadgeHtml +
-                '</div>' +
-
-                // Big amount = ORIGINAL bill always
-                '<div style="display:flex;align-items:center;justify-content:space-between;background:' + statusBg + ';padding:14px 16px;border-radius:14px;">' +
+            return (
+                '<div style="margin:0 0 20px 0;background:var(--card);border-radius:16px;border:1px solid var(--separator);overflow:hidden;box-shadow:0 2px 8px rgba(0,0,0,0.06);">' +
+                '<div style="padding:16px 18px;background:var(--bg);border-bottom:1px solid var(--separator);display:flex;justify-content:space-between;align-items:flex-start;gap:12px;">' +
                 '<div>' +
-                '<div style="font-size:32px;font-weight:800;color:' + statusColor + ';letter-spacing:-0.5px;">₹' + originalAmount + '</div>' +
-                '<div style="font-size:13px;color:' + statusColor + ';font-weight:600;margin-top:2px;text-transform:uppercase;">' + statusLabel + '</div>' +
-                stillDueLine +
+                '<div style="font-size:11px;font-weight:700;letter-spacing:0.06em;color:var(--ios-gray);text-transform:uppercase;">' +
+                (currentLang === 'en' ? 'Water invoice' : 'पानी का बिल') + '</div>' +
+                '<div style="font-size:15px;font-weight:700;margin-top:4px;">' + (displayName || 'Customer') + '</div>' +
                 '</div>' +
                 '<div style="text-align:right;">' +
-                '<div style="font-size:14px;color:var(--ios-gray);font-weight:500;">' +
-                (currentLang === 'en' ? 'Total Bill' : 'कुल बिल') + '</div>' +
+                '<div style="font-size:12px;color:var(--ios-gray);">' + (currentLang === 'en' ? 'Date' : 'तारीख') + '</div>' +
+                '<div style="font-size:15px;font-weight:700;">' + (entry.date || '—') + '</div>' +
+                '</div></div>' +
+                '<div style="padding:10px 18px;background:' + stampBg + ';border-bottom:1px solid var(--separator);">' +
+                '<span style="font-size:13px;font-weight:800;letter-spacing:0.04em;color:' + stampColor + ';">' + statusText + '</span></div>' +
+                '<div style="padding:8px 18px 0;">' +
+                rowLine(currentLang === 'en' ? 'Start time' : 'शुरू समय', entry.start || entry.start_time || '—') +
+                rowLine(currentLang === 'en' ? 'End time' : 'बंद समय', entry.end || entry.end_time || '—') +
+                rowLine(currentLang === 'en' ? 'Duration' : 'अवधि', formatDuration(entry.duration)) +
+                rowLine(currentLang === 'en' ? 'Rate' : 'रेट', '₹' + (entry.rate || 0) + (currentLang === 'en' ? ' / hour' : ' / घंटा')) +
                 '</div>' +
-                '</div>' +
-
-                '<div style="display:flex;align-items:center;gap:10px;">' +
-                '<span style="font-size:20px;">📅</span>' +
-                '<span style="font-size:16px;font-weight:600;color:var(--text);">' + (entry.date || '') + '</span>' +
-                '</div>' +
-
-                '<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">' +
-                '<div style="background:var(--bg);padding:12px;border-radius:12px;">' +
-                '<div style="font-size:12px;color:var(--ios-gray);font-weight:500;text-transform:uppercase;margin-bottom:4px;">' +
-                (currentLang === 'en' ? '▶️ Started' : '▶️ शुरू') + '</div>' +
-                '<div style="font-size:20px;font-weight:700;color:var(--text);">' + (entry.start || entry.start_time || '-') + '</div>' +
-                '</div>' +
-                '<div style="background:var(--bg);padding:12px;border-radius:12px;">' +
-                '<div style="font-size:12px;color:var(--ios-gray);font-weight:500;text-transform:uppercase;margin-bottom:4px;">' +
-                (currentLang === 'en' ? '⏹️ Ended' : '⏹️ बंद') + '</div>' +
-                '<div style="font-size:20px;font-weight:700;color:var(--text);">' + (entry.end || entry.end_time || '-') + '</div>' +
-                '</div>' +
-                '</div>' +
-
-                '<div style="display:flex;align-items:center;gap:10px;background:var(--bg);padding:12px 16px;border-radius:12px;">' +
-                '<span style="font-size:20px;">⏱️</span>' +
-                '<div>' +
-                '<div style="font-size:12px;color:var(--ios-gray);font-weight:500;">' +
-                (currentLang === 'en' ? 'Total Time' : 'कुल समय') + '</div>' +
-                '<div style="font-size:18px;font-weight:700;color:var(--ios-blue);">' + durationText + '</div>' +
-                '</div>' +
-                '</div>' +
-
-                '<div style="font-size:13px;color:var(--ios-gray);padding-left:4px;">' +
-                '₹' + (entry.rate || 0) + (currentLang === 'en' ? '/hour rate' : '/घंटे का रेट') +
-                '</div>' +
-
-                editButton +
-                '</div>';
+                '<div style="margin:12px 18px;border-top:1px dashed var(--separator);"></div>' +
+                '<div style="padding:0 18px 16px;">' +
+                '<div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:8px;">' +
+                '<span style="font-size:14px;color:var(--ios-gray);font-weight:600;">' + (currentLang === 'en' ? 'Bill amount' : 'बिल राशि') + '</span>' +
+                '<span style="font-size:28px;font-weight:800;">₹' + originalAmount + '</span></div>' +
+                (approved && paidSoFar > 0
+                    ? '<div style="display:flex;justify-content:space-between;margin-bottom:6px;">' +
+                    '<span style="font-size:14px;color:var(--ios-gray);">' + (currentLang === 'en' ? 'Paid so far' : 'अब तक चुकाया') + '</span>' +
+                    '<span style="font-size:16px;font-weight:700;color:#34C759;">− ₹' + paidSoFar + '</span></div>'
+                    : '') +
+                (approved
+                    ? '<div style="display:flex;justify-content:space-between;align-items:baseline;padding-top:8px;border-top:2px solid var(--text);">' +
+                    '<span style="font-size:15px;font-weight:700;">' + (currentLang === 'en' ? 'Balance due' : 'बाकी राशि') + '</span>' +
+                    '<span style="font-size:26px;font-weight:800;color:' + (dueNow > 0 ? '#FF3B30' : '#34C759') + ';">₹' + dueNow + '</span></div>'
+                    : '') +
+                '</div>' + editBtn + '</div>'
+            );
         }
 
-        // Payment
+        // Payment receipt
         totalPaid += entry.amount || 0;
         if (idx === 0) lastEntry = entry.date;
         const modeLabel = entry.mode || 'Cash';
         const modeEmoji = modeLabel === 'Cash' ? '💵' : (modeLabel === 'UPI' ? '📱' : '💳');
-        return '<div class="list-item" style="flex-direction:column;align-items:stretch;gap:10px;padding:16px;">' +
-            '<div style="display:flex;justify-content:space-between;align-items:center;">' +
-            '<h4 style="font-size:18px;font-weight:700;">' + modeEmoji + ' ' +
-            (currentLang === 'en' ? 'Payment Received' : 'भुगतान प्राप्त') + '</h4>' +
-            '<span style="display:inline-block;font-size:13px;font-weight:600;color:#34C759;background:rgba(52,199,89,0.10);padding:6px 14px;border-radius:20px;">' +
-            (currentLang === 'en' ? '✅ Paid' : '✅ चुकाया') + '</span>' +
+
+        return (
+            '<div style="margin:0 0 20px 0;background:var(--card);border-radius:16px;border:1px solid var(--separator);overflow:hidden;box-shadow:0 2px 8px rgba(0,0,0,0.06);">' +
+            '<div style="padding:16px 18px;background:var(--bg);border-bottom:1px solid var(--separator);display:flex;justify-content:space-between;align-items:flex-start;">' +
+            '<div>' +
+            '<div style="font-size:11px;font-weight:700;letter-spacing:0.06em;color:var(--ios-gray);text-transform:uppercase;">' +
+            (currentLang === 'en' ? 'Payment receipt' : 'भुगतान रसीद') + '</div>' +
+            '<div style="font-size:15px;font-weight:700;margin-top:4px;">' + modeEmoji + ' ' + modeLabel + '</div>' +
             '</div>' +
-            '<div style="display:flex;align-items:center;justify-content:space-between;background:rgba(52,199,89,0.08);padding:14px 16px;border-radius:14px;">' +
-            '<div style="font-size:32px;font-weight:800;color:#34C759;letter-spacing:-0.5px;">₹' + (entry.amount || 0) + '</div>' +
             '<div style="text-align:right;">' +
-            '<div style="font-size:14px;color:var(--ios-gray);font-weight:500;">' + modeLabel + '</div>' +
+            '<div style="font-size:12px;color:var(--ios-gray);">' + (currentLang === 'en' ? 'Date' : 'तारीख') + '</div>' +
+            '<div style="font-size:15px;font-weight:700;">' + (entry.date || '—') + '</div>' +
             '</div></div>' +
-            '<div style="display:flex;align-items:center;gap:10px;">' +
-            '<span style="font-size:20px;">📅</span>' +
-            '<span style="font-size:16px;font-weight:600;">' + (entry.date || '') + '</span>' +
-            '</div>' +
-            (entry.note ? '<div style="font-size:14px;color:var(--ios-gray);background:var(--bg);padding:10px 14px;border-radius:10px;">📝 ' + entry.note + '</div>' : '') +
-            '</div>';
+            '<div style="padding:10px 18px;background:rgba(52,199,89,0.12);border-bottom:1px solid var(--separator);">' +
+            '<span style="font-size:13px;font-weight:800;letter-spacing:0.04em;color:#34C759;">' +
+            (currentLang === 'en' ? 'RECEIVED' : 'प्राप्त') + '</span></div>' +
+            '<div style="padding:18px;text-align:center;">' +
+            '<div style="font-size:12px;color:var(--ios-gray);font-weight:600;text-transform:uppercase;margin-bottom:6px;">' +
+            (currentLang === 'en' ? 'Amount received' : 'प्राप्त राशि') + '</div>' +
+            '<div style="font-size:36px;font-weight:800;color:#34C759;">₹' + (entry.amount || 0) + '</div></div>' +
+            (entry.note
+                ? '<div style="padding:0 18px 18px;font-size:14px;color:var(--ios-gray);">📝 ' + entry.note + '</div>'
+                : '') +
+            '</div>'
+        );
     }).join('');
 
     document.getElementById('cust-total-due').innerText = '₹' + Math.round(totalDue);
@@ -6863,6 +6841,14 @@ async function proceedRemoveTubewell(key) {
         'success'
     );
 }
+
+window.openCustomerUsageHistory = function () {
+    showView('view-customer-usage-history');
+    if (typeof renderCustomerUsageDashboard === 'function') {
+        renderCustomerUsageDashboard();
+    }
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+};
 
 
 /* --- INIT & AUTO LOGIN --- */

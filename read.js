@@ -210,6 +210,8 @@ function waterKey(r) {
     return r.id || `${r.date}|${r.start || r.start_time || ''}|${r.amount}`;
 }
 
+
+
 /** Payments applied to water bills oldest-first. Returns { settled: Set, remainingCredit: number } */
 function getSettledWaterKeys(waterList, paymentsList) {
     const totalPaid = (paymentsList || []).reduce((s, p) => s + (parseFloat(p.amount) || 0), 0);
@@ -236,30 +238,64 @@ function getSettledWaterKeys(waterList, paymentsList) {
 }
 
 
-/** Comparable timestamp for an entry (ms). Prefer created_at, else date + time. */
 function entryTimestamp(e) {
     if (!e) return 0;
-    // Firestore Timestamp or ISO string
-    if (e.created_at) {
-        if (typeof e.created_at.toMillis === 'function') return e.created_at.toMillis();
-        if (typeof e.created_at === 'number') return e.created_at;
-        const t = Date.parse(e.created_at);
-        if (!isNaN(t)) return t;
+
+    // Prefer plain ms number (survives localStorage)
+    if (typeof e.created_at_ms === 'number' && e.created_at_ms > 0) {
+        return e.created_at_ms;
     }
+
+    if (e.created_at != null && e.created_at !== '') {
+        // Firestore Timestamp
+        if (typeof e.created_at.toMillis === 'function') {
+            return e.created_at.toMillis();
+        }
+        // After JSON.parse: { seconds, nanoseconds }
+        if (typeof e.created_at.seconds === 'number') {
+            return e.created_at.seconds * 1000 + Math.floor((e.created_at.nanoseconds || 0) / 1e6);
+        }
+        if (typeof e.created_at === 'number') {
+            return e.created_at;
+        }
+        if (typeof e.created_at === 'string') {
+            const t = Date.parse(e.created_at);
+            if (!isNaN(t)) return t;
+        }
+    }
+
+    // Last resort: date + time
     const date = e.date || '';
-    const time = (e.start || e.start_time || e.end || e.end_time || '00:00') + '';
+    const time = (e.start || e.start_time || '00:00') + '';
     const t = Date.parse(date + 'T' + (time.length <= 5 ? time + ':00' : time));
     return isNaN(t) ? 0 : t;
 }
 
-/** Newest first — for all list UIs */
 function sortNewestFirst(arr) {
-    return (arr || []).slice().sort((a, b) => entryTimestamp(b) - entryTimestamp(a));
+    return (arr || []).slice().sort((a, b) => {
+        const tb = entryTimestamp(b);
+        const ta = entryTimestamp(a);
+        if (tb !== ta) return tb - ta;
+        // same time: prefer doc id string desc as stable tie-break
+        return String(b.id || '').localeCompare(String(a.id || ''));
+    });
 }
 
-/** Oldest first — for running balance / settlement only */
 function sortOldestFirst(arr) {
-    return (arr || []).slice().sort((a, b) => entryTimestamp(a) - entryTimestamp(b));
+    return (arr || []).slice().sort((a, b) => {
+        const ta = entryTimestamp(a);
+        const tb = entryTimestamp(b);
+        if (ta !== tb) return ta - tb;
+        return String(a.id || '').localeCompare(String(b.id || ''));
+    });
+}
+
+function isApprovedForLedger(entry) {
+    if (!entry) return false;
+    if (entry.type === 'payment') return true;
+    const s = entry.approval_status;
+    if (!s) return true; // legacy
+    return s === 'approved';
 }
 
 /* --- TUBEWELL STATUS --- */
@@ -594,6 +630,19 @@ window.stopWaterSession = async function () {
         tubewell_name: twLocal.name || tw.name || 'Tubewell'
     };
     await safeSetDoc(usageRef, usagePayload);
+
+    await notifyCustomerWaterApproval({
+        customerUid: customerUid,
+        customerPhone: customerPhone,
+        ownerUid: ownerUid,
+        ownerName: ownerInfo.name || '',
+        usageId: usageRef.id,
+        amount: amount,
+        duration: parseFloat(duration.toFixed(2)),
+        date: today,
+        start: startTime,
+        end: endTime
+    });
 
     // Reset tubewell in Firestore
     await safeUpdateDoc(twRef, {
@@ -1237,141 +1286,156 @@ window.renderBahiCustomers = async function () {
 };
 
 window.openBahiLedger = async function (id) {
+    const list = document.getElementById('bahi-ledger-list');
+    if (!list) return;
+
+    const ownerUid = localStorage.getItem('user_uid');
+    if (!ownerUid) return;
+
+    // ---------- Resolve display name ----------
+    let displayName = 'Customer';
+    const active = (typeof getCustomers === 'function' ? getCustomers() : []).find(c => c.id === id);
     const bahiContacts = JSON.parse(localStorage.getItem('bahi_contacts') || '{}');
-    const historyMap = JSON.parse(localStorage.getItem('customer_history') || '{}');
-    const active = getCustomers();
-    const foundActive = active.find(c => c.id === id);
+    if (active && active.name) displayName = active.name;
+    else if (bahiContacts[id] && bahiContacts[id].name) displayName = bahiContacts[id].name;
 
-    // Build / restore customerData for this id (active, removed, or history-only)
-    if (!customerData[id]) {
-        customerData[id] = { name: 'Customer', phone: '', history: [] };
-    }
+    try {
+        const cDoc = await getDoc(doc(db, 'customers', id));
+        if (cDoc.exists() && cDoc.data().name) displayName = cDoc.data().name;
+    } catch (e) { }
 
-    if (foundActive) {
-        customerData[id].name = foundActive.name || customerData[id].name;
-        customerData[id].phone = foundActive.phone || customerData[id].phone;
-    } else if (bahiContacts[id]) {
-        customerData[id].name = bahiContacts[id].name || customerData[id].name;
-        customerData[id].phone = bahiContacts[id].phone || customerData[id].phone;
-    }
-
-    if (historyMap[id] && historyMap[id].length) {
-        customerData[id].history = historyMap[id];
-    }
-
-    // If still no history, try server water_usage for this owner's contact id
-    if (!customerData[id].history || customerData[id].history.length === 0) {
-        try {
-            const ownerUid = localStorage.getItem('user_uid');
-            const snap = await getDocs(
-                query(
-                    collection(db, 'water_usage'),
-                    where('business_id', '==', ownerUid),
-                    where('customer_id', '==', id)
-                )
-            );
-            const hist = [];
-            snap.forEach(d => {
-                const r = d.data();
-                if (r.type === 'payment') {
-                    hist.push({
-                        id: d.id,
-                        type: 'payment',
-                        date: r.date,
-                        amount: r.amount,
-                        mode: r.mode || 'Cash',
-                        note: r.note || ''
-                    });
-                } else {
-                    hist.push({
-                        id: d.id,
-                        type: 'water',
-                        date: r.date,
-                        start: r.start_time,
-                        end: r.end_time,
-                        duration: r.duration,
-                        rate: r.rate,
-                        amount: r.amount,
-                        status: r.status || 'pending'
-                    });
-                }
-            });
-            if (hist.length) {
-                customerData[id].history = hist;
-                historyMap[id] = hist;
-                localStorage.setItem('customer_history', JSON.stringify(historyMap));
-            }
-        } catch (e) {
-            console.error('openBahiLedger sync', e);
-        }
-    }
-
-    // Name from FS customers if still generic
-    if (!customerData[id].name || customerData[id].name === 'Customer') {
-        try {
-            const cDoc = await getDoc(doc(db, 'customers', id));
-            if (cDoc.exists()) {
-                const data = cDoc.data();
-                customerData[id].name = data.name || customerData[id].name;
-                customerData[id].phone = data.phone || customerData[id].phone;
-            }
-        } catch (e) { }
-    }
-
-    // Resolve fresh name from users collection first
-    let displayName = customerData[id].name || 'Customer';
-    const custEntry = getCustomerById(id) || {};
+    const custEntry = (typeof getCustomerById === 'function' ? getCustomerById(id) : null) || {};
     if (custEntry.customerUid) {
         try {
             const uDoc = await getDoc(doc(db, 'users', custEntry.customerUid));
-            if (uDoc.exists() && uDoc.data().accountStatus !== 'deleted') {
-                displayName = uDoc.data().name || displayName;
-                customerData[id].name = displayName;
+            if (uDoc.exists() && uDoc.data().accountStatus !== 'deleted' && uDoc.data().name) {
+                displayName = uDoc.data().name;
             }
         } catch (e) { }
     }
 
     document.getElementById('bahi-ledger-name').innerText = displayName;
-    const history = customerData[id].history || [];
-    const list = document.getElementById('bahi-ledger-list');
+
+    // ---------- ONLY source of truth: Firebase ----------
+    list.innerHTML = '<div class="list-item empty-state"><div class="item-info"><p>' +
+        (currentLang === 'en' ? 'Loading…' : 'लोड हो रहा है…') + '</p></div></div>';
+    showView('view-bahi-ledger');
+
+    const history = [];
+    try {
+        const snap = await getDocs(
+            query(
+                collection(db, 'water_usage'),
+                where('business_id', '==', ownerUid),
+                where('customer_id', '==', id)
+            )
+        );
+        snap.forEach(d => {
+            const r = d.data();
+            if (r.type === 'payment') {
+                history.push({
+                    id: d.id,
+                    type: 'payment',
+                    date: r.date || '',
+                    amount: r.amount,
+                    mode: r.mode || 'Cash',
+                    note: r.note || '',
+                    created_at: r.created_at || null,
+                    created_at_ms: toMs(r.created_at, r.created_at_ms, r.date)
+                });
+            } else {
+                history.push({
+                    id: d.id,
+                    type: 'water',
+                    date: r.date || '',
+                    start: r.start_time || r.start || '',
+                    end: r.end_time || r.end || '',
+                    duration: r.duration,
+                    rate: r.rate,
+                    amount: r.amount,
+                    status: r.status || 'pending',
+                    approval_status: r.approval_status || 'awaiting_approval',
+                    created_at: r.created_at || null,
+                    created_at_ms: toMs(r.created_at, r.created_at_ms, r.date)
+                });
+            }
+        });
+    } catch (e) {
+        console.error('openBahiLedger Firebase load failed', e);
+        list.innerHTML = '<div class="list-item empty-state"><div class="item-info"><p>' +
+            (currentLang === 'en' ? 'Could not load ledger' : 'लेजर लोड नहीं हुआ') + '</p></div></div>';
+        return;
+    }
+
+    // Do NOT write history to localStorage
 
     if (history.length === 0) {
         list.innerHTML = '<div class="list-item empty-state"><div class="item-info"><p>No entries yet.</p></div></div>';
         document.getElementById('bahi-total-due').innerText = '₹0';
         document.getElementById('bahi-total-paid').innerText = '₹0';
         document.getElementById('bahi-balance').innerText = '₹0';
-        showView('view-bahi-ledger');
         return;
     }
 
-    const waters = history.filter(e => e.type === 'water');
-    const pays = history.filter(e => e.type !== 'water');
+    function toMs(created_at, created_at_ms, date) {
+        if (typeof created_at_ms === 'number' && created_at_ms > 0) return created_at_ms;
+        if (created_at && typeof created_at.toMillis === 'function') return created_at.toMillis();
+        if (created_at && typeof created_at.seconds === 'number') {
+            return created_at.seconds * 1000 + Math.floor((created_at.nanoseconds || 0) / 1e6);
+        }
+        const t = Date.parse((date || '') + 'T00:00:00');
+        return isNaN(t) ? 0 : t;
+    }
 
+    function isApproved(entry) {
+        if (!entry) return false;
+        if (entry.type === 'payment') return true;
+        const s = entry.approval_status;
+        if (!s) return true; // legacy
+        return s === 'approved';
+    }
+
+    // Totals: approved water + all payments
+    const waters = history.filter(e => e.type === 'water' && isApproved(e));
+    const pays = history.filter(e => e.type === 'payment');
     const allWaterAmt = waters.reduce((s, w) => s + (parseFloat(w.amount) || 0), 0);
     const allPaidAmt = pays.reduce((s, p) => s + (parseFloat(p.amount) || 0), 0);
     const netDue = Math.max(0, allWaterAmt - allPaidAmt);
     const finalBalance = allWaterAmt - allPaidAmt;
 
-    // Oldest → newest for running balance only (copies, never mutates originals)
-    const sorted = sortOldestFirst(history);
+    // Running balance: only rows that count, oldest → newest by created_at
+    const forBalance = history.filter(e =>
+        e.type === 'payment' || (e.type === 'water' && isApproved(e))
+    );
+    const sortedAsc = sortOldestFirst(forBalance);
 
     let runningBalance = 0;
-    const entriesWithBalance = sorted.map(entry => {
+    const balanceById = {};
+    sortedAsc.forEach(entry => {
         if (entry.type === 'water') {
             runningBalance += parseFloat(entry.amount) || 0;
         } else {
             runningBalance -= parseFloat(entry.amount) || 0;
         }
-        return { ...entry, _balance: runningBalance };
+        balanceById[entry.id] = runningBalance;
     });
 
-    const displayOrder = entriesWithBalance.slice().reverse();
+    // DISPLAY: newest first — same logic as History (sortNewestFirst)
+    const displayOrder = sortNewestFirst(history);
 
-    const ledgerRows = displayOrder.map((entry, displayIndex) => {
-        const totalEntries = displayOrder.length;
-        const entryNum = totalEntries - displayIndex;
+    const ledgerRows = displayOrder.map((entry) => {
+        // Chronological number: oldest = #1
+        const olderCount = history.filter(h => {
+            const d = entryTimestamp(h) - entryTimestamp(entry);
+            if (d < 0) return true;
+            if (d > 0) return false;
+            return String(h.id || '') < String(entry.id || '');
+        }).length;
+        const entryNum = olderCount + 1;
+
         const isWater = entry.type === 'water';
-        const bal = entry._balance;
+        const approved = isApproved(entry);
+        const bal = (approved && balanceById[entry.id] != null) ? balanceById[entry.id] : null;
 
         let durationText = '';
         if (isWater) {
@@ -1390,104 +1454,103 @@ window.openBahiLedger = async function (id) {
         }
 
         if (isWater) {
-            // ==================== WATER BILL ENTRY ====================
-            const statusLabel = entry.status === 'paid'
-                ? (currentLang === 'en' ? '✅ Paid' : '✅ चुकाया')
-                : (currentLang === 'en' ? '🔴 Pending' : '🔴 बाकी');
-            const statusColor = entry.status === 'paid' ? '#34C759' : '#FF3B30';
-            const statusBg = entry.status === 'paid' ? 'rgba(52,199,89,0.10)' : 'rgba(255,59,48,0.10)';
+            const approvalStatus = entry.approval_status || 'approved';
+            let statusLabel, statusColor, statusBg, borderColor;
 
-            return '<div class="list-item" style="flex-direction:column;align-items:stretch;gap:12px;padding:16px;border-left:4px solid #FF3B30;">' +
+            if (approvalStatus === 'awaiting_approval') {
+                statusLabel = currentLang === 'en' ? '⏳ Awaiting approval' : '⏳ स्वीकृति बाकी';
+                statusColor = '#FF9500'; statusBg = 'rgba(255,149,0,0.12)'; borderColor = '#FF9500';
+            } else if (approvalStatus === 'rejected') {
+                statusLabel = currentLang === 'en' ? '❌ Rejected' : '❌ अस्वीकृत';
+                statusColor = '#FF3B30'; statusBg = 'rgba(255,59,48,0.12)'; borderColor = '#FF3B30';
+            } else if (entry.status === 'paid') {
+                statusLabel = currentLang === 'en' ? '✅ Paid' : '✅ चुकाया';
+                statusColor = '#34C759'; statusBg = 'rgba(52,199,89,0.10)'; borderColor = '#34C759';
+            } else {
+                statusLabel = currentLang === 'en' ? '🔴 Pending' : '🔴 बाकी';
+                statusColor = '#FF3B30'; statusBg = 'rgba(255,59,48,0.10)'; borderColor = '#FF3B30';
+            }
 
-                // Header: Entry number + Status badge
+            const balanceFooter = bal == null
+                ? '<div style="display:flex;justify-content:space-between;align-items:center;padding-top:8px;border-top:1px dashed var(--separator);">' +
+                '<span style="font-size:12px;color:var(--ios-gray);font-weight:500;">' +
+                (currentLang === 'en' ? 'Not in balance yet' : 'अभी बाकी में नहीं') + '</span>' +
+                '<span style="font-size:14px;font-weight:600;color:var(--ios-gray);">' +
+                (currentLang === 'en' ? 'Waiting for approval' : 'स्वीकृति का इंतजार') + '</span></div>'
+                : '<div style="display:flex;justify-content:space-between;align-items:center;padding-top:8px;border-top:1px dashed var(--separator);">' +
+                '<span style="font-size:12px;color:var(--ios-gray);font-weight:500;">' +
+                (currentLang === 'en' ? 'Balance after this' : 'इसके बाद बाकी') + '</span>' +
+                '<span style="font-size:16px;font-weight:700;color:' +
+                (bal > 0 ? '#FF3B30' : (bal < 0 ? '#34C759' : 'var(--ios-gray)')) + ';">₹' +
+                Math.abs(bal) + ' ' +
+                (bal > 0 ? (currentLang === 'en' ? 'Due' : 'बाकी') :
+                    bal < 0 ? (currentLang === 'en' ? 'Advance' : 'जमा') :
+                        (currentLang === 'en' ? 'Clear' : 'बराबर')) + '</span></div>';
+
+            return '<div class="list-item" style="flex-direction:column;align-items:stretch;gap:12px;padding:16px;border-left:4px solid ' + borderColor + ';">' +
                 '<div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">' +
-                '<span style="font-size:12px;font-weight:600;color:var(--ios-gray);background:var(--bg);padding:4px 10px;border-radius:10px;">#' + entryNum + ' · ' + (currentLang === 'en' ? '💧 Water Bill' : '💧 पानी का बिल') + '</span>' +
-                '<span style="font-size:13px;font-weight:700;color:' + statusColor + ';background:' + statusBg + ';padding:6px 14px;border-radius:20px;">' + statusLabel + '</span>' +
-                '</div>' +
-
-                // Big Amount
+                '<span style="font-size:12px;font-weight:600;color:var(--ios-gray);background:var(--bg);padding:4px 10px;border-radius:10px;">#' + entryNum + ' · ' +
+                (currentLang === 'en' ? '💧 Water Bill' : '💧 पानी का बिल') + '</span>' +
+                '<span style="font-size:13px;font-weight:700;color:' + statusColor + ';background:' + statusBg + ';padding:6px 14px;border-radius:20px;">' + statusLabel + '</span></div>' +
                 '<div style="display:flex;align-items:center;justify-content:space-between;">' +
-                '<div style="font-size:36px;font-weight:800;color:#FF3B30;letter-spacing:-1px;">₹' + (entry.amount || 0) + '</div>' +
-                '<div style="text-align:right;">' +
-                '<div style="font-size:13px;color:var(--ios-gray);font-weight:500;">' + (currentLang === 'en' ? 'You need to pay' : 'आपको देना है') + '</div>' +
-                '</div>' +
-                '</div>' +
-
-                // Date
-                '<div style="display:flex;align-items:center;gap:10px;">' +
-                '<span style="font-size:18px;">📅</span>' +
-                '<span style="font-size:16px;font-weight:600;color:var(--text);">' + entry.date + '</span>' +
-                '</div>' +
-
-                // Time boxes
+                '<div style="font-size:36px;font-weight:800;color:' + (approved ? '#FF3B30' : 'var(--ios-gray)') + ';letter-spacing:-1px;">₹' + (entry.amount || 0) + '</div>' +
+                '<div style="text-align:right;"><div style="font-size:13px;color:var(--ios-gray);font-weight:500;">' +
+                (approved
+                    ? (currentLang === 'en' ? 'You need to pay' : 'आपको देना है')
+                    : (currentLang === 'en' ? 'Not confirmed yet' : 'अभी पुष्टि नहीं')) +
+                '</div></div></div>' +
+                '<div style="display:flex;align-items:center;gap:10px;"><span style="font-size:18px;">📅</span>' +
+                '<span style="font-size:16px;font-weight:600;color:var(--text);">' + entry.date + '</span></div>' +
                 '<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">' +
                 '<div style="background:var(--bg);padding:12px;border-radius:12px;text-align:center;">' +
-                '<div style="font-size:11px;color:var(--ios-gray);font-weight:600;text-transform:uppercase;margin-bottom:4px;">' + (currentLang === 'en' ? '▶️ Start' : '▶️ शुरू') + '</div>' +
-                '<div style="font-size:22px;font-weight:700;color:var(--text);">' + (entry.start || '-') + '</div>' +
-                '</div>' +
+                '<div style="font-size:11px;color:var(--ios-gray);font-weight:600;text-transform:uppercase;margin-bottom:4px;">' +
+                (currentLang === 'en' ? '▶️ Start' : '▶️ शुरू') + '</div>' +
+                '<div style="font-size:22px;font-weight:700;color:var(--text);">' + (entry.start || '-') + '</div></div>' +
                 '<div style="background:var(--bg);padding:12px;border-radius:12px;text-align:center;">' +
-                '<div style="font-size:11px;color:var(--ios-gray);font-weight:600;text-transform:uppercase;margin-bottom:4px;">' + (currentLang === 'en' ? '⏹️ End' : '⏹️ बंद') + '</div>' +
-                '<div style="font-size:22px;font-weight:700;color:var(--text);">' + (entry.end || '-') + '</div>' +
-                '</div>' +
-                '</div>' +
-
-                // Duration
+                '<div style="font-size:11px;color:var(--ios-gray);font-weight:600;text-transform:uppercase;margin-bottom:4px;">' +
+                (currentLang === 'en' ? '⏹️ End' : '⏹️ बंद') + '</div>' +
+                '<div style="font-size:22px;font-weight:700;color:var(--text);">' + (entry.end || '-') + '</div></div></div>' +
                 '<div style="display:flex;align-items:center;gap:10px;background:var(--bg);padding:10px 14px;border-radius:10px;">' +
                 '<span style="font-size:18px;">⏱️</span>' +
                 '<span style="font-size:15px;font-weight:600;color:var(--ios-blue);">' + durationText + '</span>' +
-                '<span style="font-size:12px;color:var(--ios-gray);margin-left:auto;">@ ₹' + (entry.rate || 0) + (currentLang === 'en' ? '/hr' : '/घंटा') + '</span>' +
-                '</div>' +
-
-                // Running balance footer
-                '<div style="display:flex;justify-content:space-between;align-items:center;padding-top:8px;border-top:1px dashed var(--separator);">' +
-                '<span style="font-size:12px;color:var(--ios-gray);font-weight:500;">' + (currentLang === 'en' ? 'Balance after this' : 'इसके बाद बाकी') + '</span>' +
-                '<span style="font-size:16px;font-weight:700;color:' + (bal > 0 ? '#FF3B30' : (bal < 0 ? '#34C759' : 'var(--ios-gray)')) + ';">₹' + Math.abs(bal) + ' ' + (bal > 0 ? (currentLang === 'en' ? 'Due' : 'बाकी') : (bal < 0 ? (currentLang === 'en' ? 'Advance' : 'जमा') : (currentLang === 'en' ? 'Clear' : 'बराबर'))) + '</span>' +
-                '</div>' +
-
-                '</div>';
-
-        } else {
-            // ==================== PAYMENT ENTRY ====================
-            const modeLabel = entry.mode || 'Cash';
-            const modeEmoji = modeLabel === 'Cash' ? '💵' : (modeLabel === 'UPI' ? '📱' : '💳');
-
-            return '<div class="list-item" style="flex-direction:column;align-items:stretch;gap:12px;padding:16px;border-left:4px solid #34C759;">' +
-
-                // Header: Entry number + Payment badge
-                '<div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">' +
-                '<span style="font-size:12px;font-weight:600;color:var(--ios-gray);background:var(--bg);padding:4px 10px;border-radius:10px;">#' + entryNum + ' · ' + modeEmoji + ' ' + (currentLang === 'en' ? 'Payment' : 'भुगतान') + '</span>' +
-                '<span style="font-size:13px;font-weight:700;color:#34C759;background:rgba(52,199,89,0.10);padding:6px 14px;border-radius:20px;">' + (currentLang === 'en' ? '✅ Received' : '✅ प्राप्त') + '</span>' +
-                '</div>' +
-
-                // Big Amount (green = money coming in)
-                '<div style="display:flex;align-items:center;justify-content:space-between;">' +
-                '<div style="font-size:36px;font-weight:800;color:#34C759;letter-spacing:-1px;">₹' + (entry.amount || 0) + '</div>' +
-                '<div style="text-align:right;">' +
-                '<div style="font-size:13px;color:var(--ios-gray);font-weight:500;">' + (currentLang === 'en' ? 'You paid' : 'आपने दिया') + '</div>' +
-                '</div>' +
-                '</div>' +
-
-                // Date
-                '<div style="display:flex;align-items:center;gap:10px;">' +
-                '<span style="font-size:18px;">📅</span>' +
-                '<span style="font-size:16px;font-weight:600;color:var(--text);">' + entry.date + '</span>' +
-                '</div>' +
-
-                // Mode + Note
-                '<div style="display:flex;align-items:center;gap:10px;background:var(--bg);padding:10px 14px;border-radius:10px;">' +
-                '<span style="font-size:16px;">' + modeEmoji + '</span>' +
-                '<span style="font-size:15px;font-weight:600;color:var(--text);">' + modeLabel + '</span>' +
-                (entry.note ? '<span style="font-size:13px;color:var(--ios-gray);margin-left:auto;">📝 ' + entry.note + '</span>' : '') +
-                '</div>' +
-
-                // Running balance footer
-                '<div style="display:flex;justify-content:space-between;align-items:center;padding-top:8px;border-top:1px dashed var(--separator);">' +
-                '<span style="font-size:12px;color:var(--ios-gray);font-weight:500;">' + (currentLang === 'en' ? 'Balance after this' : 'इसके बाद बाकी') + '</span>' +
-                '<span style="font-size:16px;font-weight:700;color:' + (bal > 0 ? '#FF3B30' : (bal < 0 ? '#34C759' : 'var(--ios-gray)')) + ';">₹' + Math.abs(bal) + ' ' + (bal > 0 ? (currentLang === 'en' ? 'Due' : 'बाकी') : (bal < 0 ? (currentLang === 'en' ? 'Advance' : 'जमा') : (currentLang === 'en' ? 'Clear' : 'बराबर'))) + '</span>' +
-                '</div>' +
-
+                '<span style="font-size:12px;color:var(--ios-gray);margin-left:auto;">@ ₹' + (entry.rate || 0) +
+                (currentLang === 'en' ? '/hr' : '/घंटा') + '</span></div>' +
+                balanceFooter +
                 '</div>';
         }
+
+        // PAYMENT
+        const modeLabel = entry.mode || 'Cash';
+        const modeEmoji = modeLabel === 'Cash' ? '💵' : (modeLabel === 'UPI' ? '📱' : '💳');
+        const balVal = bal != null ? bal : 0;
+
+        return '<div class="list-item" style="flex-direction:column;align-items:stretch;gap:12px;padding:16px;border-left:4px solid #34C759;">' +
+            '<div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">' +
+            '<span style="font-size:12px;font-weight:600;color:var(--ios-gray);background:var(--bg);padding:4px 10px;border-radius:10px;">#' + entryNum + ' · ' + modeEmoji + ' ' +
+            (currentLang === 'en' ? 'Payment' : 'भुगतान') + '</span>' +
+            '<span style="font-size:13px;font-weight:700;color:#34C759;background:rgba(52,199,89,0.10);padding:6px 14px;border-radius:20px;">' +
+            (currentLang === 'en' ? '✅ Received' : '✅ प्राप्त') + '</span></div>' +
+            '<div style="display:flex;align-items:center;justify-content:space-between;">' +
+            '<div style="font-size:36px;font-weight:800;color:#34C759;letter-spacing:-1px;">₹' + (entry.amount || 0) + '</div>' +
+            '<div style="text-align:right;"><div style="font-size:13px;color:var(--ios-gray);font-weight:500;">' +
+            (currentLang === 'en' ? 'You paid' : 'आपने दिया') + '</div></div></div>' +
+            '<div style="display:flex;align-items:center;gap:10px;"><span style="font-size:18px;">📅</span>' +
+            '<span style="font-size:16px;font-weight:600;color:var(--text);">' + entry.date + '</span></div>' +
+            '<div style="display:flex;align-items:center;gap:10px;background:var(--bg);padding:10px 14px;border-radius:10px;">' +
+            '<span style="font-size:16px;">' + modeEmoji + '</span>' +
+            '<span style="font-size:15px;font-weight:600;color:var(--text);">' + modeLabel + '</span>' +
+            (entry.note ? '<span style="font-size:13px;color:var(--ios-gray);margin-left:auto;">📝 ' + entry.note + '</span>' : '') +
+            '</div>' +
+            '<div style="display:flex;justify-content:space-between;align-items:center;padding-top:8px;border-top:1px dashed var(--separator);">' +
+            '<span style="font-size:12px;color:var(--ios-gray);font-weight:500;">' +
+            (currentLang === 'en' ? 'Balance after this' : 'इसके बाद बाकी') + '</span>' +
+            '<span style="font-size:16px;font-weight:700;color:' +
+            (balVal > 0 ? '#FF3B30' : (balVal < 0 ? '#34C759' : 'var(--ios-gray)')) + ';">₹' +
+            Math.abs(balVal) + ' ' +
+            (balVal > 0 ? (currentLang === 'en' ? 'Due' : 'बाकी') :
+                balVal < 0 ? (currentLang === 'en' ? 'Advance' : 'जमा') :
+                    (currentLang === 'en' ? 'Clear' : 'बराबर')) +
+            '</span></div></div>';
     }).join('');
 
     list.innerHTML = ledgerRows;
@@ -1496,7 +1559,20 @@ window.openBahiLedger = async function (id) {
     document.getElementById('bahi-balance').innerText = '₹' + Math.round(Math.abs(finalBalance)) +
         (finalBalance > 0 ? (currentLang === 'en' ? ' Due' : ' बाकी') :
             finalBalance < 0 ? (currentLang === 'en' ? ' Advance' : ' जमा') : '');
-    showView('view-bahi-ledger');
+
+    const hintEl = document.getElementById('bahi-balance-hint');
+    if (hintEl) {
+        if (finalBalance > 0) {
+            hintEl.innerText = currentLang === 'en' ? 'Customer still needs to pay' : 'ग्राहक को अभी भी देना है';
+            hintEl.style.color = '#FF3B30';
+        } else if (finalBalance < 0) {
+            hintEl.innerText = currentLang === 'en' ? 'Customer paid extra (advance)' : 'ग्राहक ने ज्यादा दिया (जमा)';
+            hintEl.style.color = '#34C759';
+        } else {
+            hintEl.innerText = currentLang === 'en' ? 'All clear! Nothing due.' : 'सब बराबर! कुछ नहीं बाकी।';
+            hintEl.style.color = 'var(--ios-gray)';
+        }
+    }
 };
 
 let dashboardPeriod = 'today';
@@ -1538,12 +1614,8 @@ window.updateDashboardStats = function () {
     const inRange = (dateStr) => {
         if (!dateStr) return false;
         if (dashboardPeriod === 'today') return dateStr === today;
-        if (dashboardPeriod === 'month') {
-            return dateStr.startsWith(today.slice(0, 7));
-        }
-        if (dashboardPeriod === 'year') {
-            return dateStr.startsWith(String(now.getFullYear()));
-        }
+        if (dashboardPeriod === 'month') return dateStr.startsWith(today.slice(0, 7));
+        if (dashboardPeriod === 'year') return dateStr.startsWith(String(now.getFullYear()));
         if (dashboardPeriod === 'custom') {
             const from = (document.getElementById('dash-from-date') || {}).value || today;
             const to = (document.getElementById('dash-to-date') || {}).value || today;
@@ -1552,10 +1624,12 @@ window.updateDashboardStats = function () {
         return dateStr === today;
     };
 
-    const periodWater = history.filter(e => e.type === 'water' && inRange(e.date));
+    // Only approved water for money + hours
+    const periodWater = history.filter(e =>
+        e.type === 'water' && inRange(e.date) && isApprovedForLedger(e)
+    );
     const periodPay = history.filter(e => e.type === 'payment' && inRange(e.date));
 
-    // For settlement, use ONLY period payments against period water (scoped to selected period)
     const periodPaysTotal = periodPay.reduce((s, p) => s + (parseFloat(p.amount) || 0), 0);
     let creditLeft = periodPaysTotal;
     const sortedWater = periodWater.slice().sort((a, b) =>
@@ -1579,7 +1653,6 @@ window.updateDashboardStats = function () {
             pending += e.amount || 0;
         }
     });
-
     periodPay.forEach(e => { received += e.amount || 0; });
 
     const hrsEl = document.getElementById('stat-hours');
@@ -1712,12 +1785,11 @@ window.renderPendingPayments = function () {
     if (!list) return;
 
     const custHistory = JSON.parse(localStorage.getItem('customer_history') || '{}');
-    const water = history.filter(h => h.type === 'water');
+    const water = history.filter(h => h.type === 'water' && isApprovedForLedger(h));
     const byCustomer = {};
 
     water.forEach(e => {
         const cid = e.customerId;
-        // Deduplicate payments by id
         const seenIds = new Set();
         const pays = [];
         (custHistory[cid] || []).forEach(x => {
@@ -2655,115 +2727,9 @@ window.startOwnerListeners = function () {
 };
 
 window.renderCustomerDetailUI = function (id) {
-    window.currentCustomerId = id;
-    const listCust = getCustomerById(id) || {};
-    let displayName = listCust.name || (customerData[id] && customerData[id].name) || 'Customer';
-    const accountDeleted = listCust.accountDeleted === true;
-    if (listCust.customerUid) {
-        getDoc(doc(db, 'users', listCust.customerUid)).then(uDoc => {
-            if (uDoc.exists() && uDoc.data().accountStatus !== 'deleted') {
-                displayName = uDoc.data().name || displayName;
-                if (customerData[id]) customerData[id].name = displayName;
-            }
-        }).catch(() => { });
+    if (typeof openCustomerDetail === 'function') {
+        openCustomerDetail(id);
     }
-    const detailView = document.getElementById('view-customer-detail');
-    if (detailView) {
-        const btns = detailView.querySelectorAll('button');
-        btns.forEach(btn => {
-            const t = (btn.innerText || btn.textContent || '').toLowerCase();
-            const isAction = t.indexOf('payment') >= 0 || t.indexOf('water') >= 0 || t.indexOf('queue') >= 0 ||
-                t.indexOf('भुगतान') >= 0 || t.indexOf('पानी') >= 0 || t.indexOf('कतार') >= 0;
-            if (isAction) {
-                btn.disabled = accountDeleted;
-                btn.style.opacity = accountDeleted ? '0.45' : '1';
-                btn.style.pointerEvents = accountDeleted ? 'none' : '';
-            }
-        });
-        let ban = document.getElementById('cust-deleted-banner');
-        if (accountDeleted) {
-            if (!ban) {
-                ban = document.createElement('div');
-                ban.id = 'cust-deleted-banner';
-                ban.style.cssText = 'padding:10px 12px;margin-bottom:12px;border-radius:10px;background:rgba(255,59,48,0.12);color:var(--ios-red);font-size:13px;';
-                const nameEl = document.getElementById('customer-detail-name');
-                if (nameEl && nameEl.parentNode) nameEl.parentNode.insertBefore(ban, nameEl.nextSibling);
-            }
-            ban.innerText = currentLang === 'en' ? 'This customer deleted their account. \n History only can be visible. Other actions are disabled.' : 'इस ग्राहक ने खाता हटा दिया है। केवल इतिहास — कार्य बंद।';
-            ban.style.display = 'block';
-        } else if (ban) ban.style.display = 'none';
-    }
-    const cust = customerData[id];
-    if (!cust) {
-        const customers = getCustomers();
-        const found = customers.find(c => c.id === id);
-        if (found) customerData[id] = { name: found.name, phone: found.phone, history: [] };
-        else return;
-    }
-    const historyList = document.getElementById('customer-history-list');
-    const allHistory = customerData[id].history || [];
-    document.getElementById('customer-detail-name').innerText = customerData[id].name;
-    if (allHistory.length === 0) {
-        historyList.innerHTML = '<div class="list-item"><div class="item-info"><p style="color: var(--ios-gray);">No entries yet.</p></div></div>';
-        document.getElementById('cust-total-due').innerText = '₹0';
-        document.getElementById('cust-total-paid').innerText = '₹0';
-        document.getElementById('cust-total-hours').innerHTML = '0 <small>Hrs</small>';
-        document.getElementById('cust-last-entry').innerText = '-';
-        showView('view-customer-detail');
-        return;
-    }
-    const waters = allHistory.filter(e => e.type === 'water');
-    const pays = allHistory.filter(e => e.type === 'payment');
-    const { settled, partial } = getSettledWaterKeys(waters, pays);
-    let totalDue = 0, totalPaid = 0, totalHours = 0, lastEntry = '-';
-    historyList.innerHTML = allHistory.slice().reverse().map((entry, idx) => {
-        if (entry.type === 'water') {
-            totalHours += entry.duration || 0;
-            if (idx === 0) lastEntry = entry.date;
-            const wkey = waterKey(entry);
-            const isSettled = entry.status === 'paid' || settled.has(wkey);
-            const partialDue = partial.get(wkey) || 0;
-            if (!isSettled) totalDue += entry.amount || 0;
-            const displayAmount = partialDue > 0 ? partialDue : entry.amount;
-            const approvalStatus = entry.approval_status || 'awaiting_approval';
-            let approvalBadge = '';
-            let editButton = '';
-            if (approvalStatus === 'awaiting_approval') {
-                approvalBadge = '<span style="font-size:11px;color:var(--ios-orange);background:rgba(255,149,0,0.12);padding:2px 8px;border-radius:6px;margin-left:8px;">' + (currentLang === 'en' ? 'Waiting for customer approval' : 'ग्राहक की स्वीकृति का इंतजार') + '</span>';
-                editButton = '<button class="btn-small" style="margin-top:6px;background:var(--ios-blue);" onclick="openEditWaterModal(\'' + (entry.id || '') + '\')">' + (currentLang === 'en' ? 'Edit' : 'एडिट') + '</button>';
-            } else if (approvalStatus === 'approved') {
-                approvalBadge = '<span style="font-size:11px;color:var(--ios-green);background:rgba(52,199,89,0.12);padding:2px 8px;border-radius:6px;margin-left:8px;">' + (currentLang === 'en' ? 'Approved' : 'स्वीकृत') + '</span>';
-            } else if (approvalStatus === 'rejected') {
-                approvalBadge = '<span style="font-size:11px;color:var(--ios-red);background:rgba(255,59,48,0.12);padding:2px 8px;border-radius:6px;margin-left:8px;">' + (currentLang === 'en' ? 'Customer Rejected' : 'ग्राहक ने अस्वीकार किया') + '</span>';
-                editButton = '<button class="btn-small" style="margin-top:6px;background:var(--ios-blue);" onclick="openEditWaterModal(\'' + (entry.id || '') + '\')">' + (currentLang === 'en' ? 'Edit' : 'एडिट') + '</button>';
-            }
-            const statusLabel = isSettled ? 'paid' : (partialDue > 0 ? 'partial' : 'pending');
-            const statusColor = isSettled ? 'text-green' : (partialDue > 0 ? 'text-orange' : 'text-red');
-            return '<div class="list-item" style="flex-direction:column;align-items:flex-start;gap:6px;">' +
-                '<div style="display:flex;justify-content:space-between;width:100%;">' +
-                '<div class="item-info">' +
-                '<h4>Water Usage' + approvalBadge + '</h4>' +
-                '<p>' + entry.date + ' • ' + entry.start + ' - ' + entry.end + ' • ' + entry.duration + ' hrs</p>' +
-                '</div>' +
-                '<div style="text-align:right;">' +
-                '<div class="item-value ' + statusColor + '">₹' + displayAmount + '</div>' +
-                '<span style="font-size: 11px; color: var(--ios-gray); text-transform: uppercase;">' + statusLabel + '</span>' +
-                '</div>' +
-                '</div>' +
-                editButton +
-                '</div>';
-        } else {
-            totalPaid += entry.amount || 0;
-            if (idx === 0) lastEntry = entry.date;
-            const modeLabel = entry.mode || 'Cash';
-            return '<div class="list-item"><div class="item-info"><h4>Payment · ' + modeLabel + '</h4><p>' + entry.date + '</p>' + (entry.note ? '<p style="font-size:12px;color:var(--ios-gray);margin-top:2px;">' + entry.note + '</p>' : '') + '</div><div class="item-value text-green">-₹' + entry.amount + '</div></div>';
-        }
-    }).join('');
-    document.getElementById('cust-total-due').innerText = '₹' + totalDue;
-    document.getElementById('cust-total-paid').innerText = '₹' + totalPaid;
-    document.getElementById('cust-total-hours').innerHTML = totalHours.toFixed(1) + ' <small>Hrs</small>';
-    document.getElementById('cust-last-entry').innerText = lastEntry;
-    showView('view-customer-detail');
 };
 
 
@@ -2842,39 +2808,65 @@ async function getOwnerAndTubewell(businessId) {
 
 window.renderCustomerUsageDashboard = async function () {
     const records = await loadCustomerUsageFromServer();
-    const water = records.filter(r => r.type === 'water' || (!r.type && r.duration != null));
+
+    // Totals: approved water only
+    const water = records.filter(r =>
+        (r.type === 'water' || (!r.type && r.duration != null)) && isApprovedForLedger(r)
+    );
+    // List: ALL water (including awaiting_approval / rejected) so Approve/Mistake show
+    const waterAll = records.filter(r =>
+        r.type === 'water' || (!r.type && r.duration != null)
+    );
     const payments = records.filter(r => r.type === 'payment');
 
-    let totalHrs = 0, totalDue = 0, totalPaid = 0;
+    let totalHrs = 0, totalPaid = 0;
     water.forEach(r => {
         totalHrs += parseFloat(r.duration) || 0;
-        if (r.status === 'pending') totalDue += parseFloat(r.amount) || 0;
-        else if (r.status === 'paid') totalPaid += parseFloat(r.amount) || 0;
     });
     payments.forEach(r => { totalPaid += parseFloat(r.amount) || 0; });
-    // Net due = water pending - (payments beyond paid water). Simple: due = max(0, sum water - sum payments)
     const allWaterAmt = water.reduce((s, r) => s + (parseFloat(r.amount) || 0), 0);
     const netDue = Math.max(0, allWaterAmt - totalPaid);
 
     const hrsEl = document.getElementById('cust-total-hrs');
     const dueEl = document.getElementById('cust-total-due-display');
     const paidEl = document.getElementById('cust-total-paid-display');
+    // Also support older HTML ids used in the view
+    const dueEl2 = document.getElementById('bahi-total-due');
+    const paidEl2 = document.getElementById('bahi-total-paid');
+    const balEl2 = document.getElementById('bahi-balance');
+    const balHint = document.getElementById('bahi-balance-hint');
+
     if (hrsEl) hrsEl.innerHTML = totalHrs.toFixed(1) + ' <small>Hrs</small>';
     if (dueEl) dueEl.innerText = '₹' + Math.round(netDue);
     if (paidEl) paidEl.innerText = '₹' + Math.round(totalPaid);
+    if (dueEl2) dueEl2.innerText = '₹' + Math.round(netDue);
+    if (paidEl2) paidEl2.innerText = '₹' + Math.round(totalPaid);
+    if (balEl2) {
+        const bal = allWaterAmt - totalPaid;
+        balEl2.innerText = '₹' + Math.round(Math.abs(bal));
+        if (balHint) {
+            if (bal > 0) {
+                balHint.innerText = currentLang === 'en' ? 'Still due' : 'अभी बाकी';
+            } else if (bal < 0) {
+                balHint.innerText = currentLang === 'en' ? 'Advance / extra paid' : 'ज्यादा दिया (जमा)';
+            } else {
+                balHint.innerText = currentLang === 'en' ? 'All clear!' : 'सब बराबर!';
+            }
+        }
+    }
 
     const list = document.getElementById('customer-usage-list');
     if (list) {
-        if (water.length === 0) {
+        if (waterAll.length === 0) {
             list.innerHTML = '<div class="list-item empty-state"><div class="item-info"><p>' +
                 (currentLang === 'en' ? 'No usage yet' : 'अभी कोई उपयोग नहीं') + '</p></div></div>';
         } else {
-            // Apply payments against water (oldest first)
-            let creditLeft = totalPaid;
+            // Settlement only on approved water
             const waterSortedAsc = sortOldestFirst(water);
             const { settled: settledIds, partial: partialIds } = getSettledWaterKeys(waterSortedAsc, payments);
 
-            const waterNewest = sortNewestFirst(water);
+            // LIST = all water, newest first
+            const waterNewest = sortNewestFirst(waterAll);
 
             Promise.all(waterNewest.map(async r => {
                 const { ownerName, twName } = await getOwnerAndTubewell(r.business_id);
@@ -2887,14 +2879,17 @@ window.renderCustomerUsageDashboard = async function () {
                 if (!currentList || !currentList.isConnected || currentList !== list) return;
 
                 if (rows.length === 0) {
-                    currentList.innerHTML = '<div class="list-item empty-state"><div class="item-info"><p>' + (currentLang === 'en' ? 'No usage yet' : 'अभी कोई उपयोग नहीं') + '</p></div></div>';
+                    currentList.innerHTML = '<div class="list-item empty-state"><div class="item-info"><p>' +
+                        (currentLang === 'en' ? 'No usage yet' : 'अभी कोई उपयोग नहीं') + '</p></div></div>';
                     return;
                 }
 
                 const byOwner = {};
                 rows.forEach(row => {
                     const key = row.ownerId || 'unknown';
-                    if (!byOwner[key]) byOwner[key] = { ownerName: row.ownerName, twName: row.twName, records: [] };
+                    if (!byOwner[key]) {
+                        byOwner[key] = { ownerName: row.ownerName, twName: row.twName, records: [] };
+                    }
                     byOwner[key].records.push(row);
                 });
 
@@ -2910,10 +2905,10 @@ window.renderCustomerUsageDashboard = async function () {
                         if (approvalStatus === 'awaiting_approval') {
                             approvalBadge = '<span style="font-size:11px;color:var(--ios-orange);background:rgba(255,149,0,0.12);padding:2px 8px;border-radius:6px;">' +
                                 (currentLang === 'en' ? 'Awaiting your approval' : 'आपकी स्वीकृति का इंतजार') + '</span>';
-                            actionButtons = '<div style="display:flex;gap:8px;margin-top:8px;">' +
-                                '<button class="btn-small" style="background:var(--ios-green);flex:1;" onclick="approveWaterEntry(\'' + r.id + '\')">' +
+                            actionButtons = '<div style="display:flex;gap:8px;margin-top:8px;width:100%;">' +
+                                '<button class="btn-small" style="background:var(--ios-green);flex:1;" onclick="approveWaterEntry(\'' + (r.id || '') + '\')">' +
                                 (currentLang === 'en' ? 'Approve' : 'स्वीकार करें') + '</button>' +
-                                '<button class="btn-small" style="background:var(--ios-red);flex:1;" onclick="rejectWaterEntry(\'' + r.id + '\')">' +
+                                '<button class="btn-small" style="background:var(--ios-red);flex:1;" onclick="rejectWaterEntry(\'' + (r.id || '') + '\')">' +
                                 (currentLang === 'en' ? 'Mistake' : 'गलती') + '</button>' +
                                 '</div>';
                         } else if (approvalStatus === 'approved') {
@@ -2925,7 +2920,9 @@ window.renderCustomerUsageDashboard = async function () {
                         }
 
                         let st;
-                        if (isSettled) {
+                        if (!isApprovedForLedger(r)) {
+                            st = '<span style="font-size:11px;color:var(--ios-orange);">WAIT</span>';
+                        } else if (isSettled) {
                             st = '<span style="font-size:11px;color:var(--ios-green);">PAID</span>';
                         } else if (isPartial) {
                             st = '<span style="font-size:11px;color:var(--ios-orange);">PARTIAL</span>';
@@ -2933,16 +2930,21 @@ window.renderCustomerUsageDashboard = async function () {
                             st = '<span style="font-size:11px;color:var(--ios-red);">PENDING</span>';
                         }
 
+                        const amountColor = !isApprovedForLedger(r)
+                            ? 'text-orange'
+                            : (isSettled ? 'text-green' : (isPartial ? 'text-orange' : 'text-red'));
+
                         return '<div class="list-item" style="flex-direction:column;align-items:flex-start;gap:4px;">' +
                             '<div style="display:flex;justify-content:space-between;width:100%;">' +
                             '<div class="item-info">' +
                             '<h4>' + (currentLang === 'en' ? 'Water' : 'पानी') + '</h4>' +
-                            '<p>' + (r.date || '') + ' · ' + (r.start_time || '') + ' - ' + (r.end_time || '') +
+                            '<p>' + (r.date || '') + ' · ' + (r.start_time || r.start || '') + ' - ' + (r.end_time || r.end || '') +
                             ' · ' + (r.duration || 0) + ' hrs</p>' +
                             '</div>' +
                             '<div style="text-align:right;">' +
-                            '<div class="item-value ' + (isSettled ? 'text-green' : (isPartial ? 'text-orange' : 'text-red')) + '">₹' + (r.amount || 0) +
-                            '</div>' + st + '</div>' +
+                            '<div class="item-value ' + amountColor + '">₹' + (r.amount || 0) + '</div>' +
+                            st +
+                            '</div>' +
                             '</div>' +
                             '<div style="width:100%;">' + approvalBadge + '</div>' +
                             actionButtons +
@@ -2955,7 +2957,6 @@ window.renderCustomerUsageDashboard = async function () {
         }
     }
 
-    // When building payList — make the map async-friendly:
     const payList = document.getElementById('customer-payments-list');
     if (payList) {
         if (payments.length === 0) {
@@ -2963,8 +2964,8 @@ window.renderCustomerUsageDashboard = async function () {
                 (currentLang === 'en' ? 'No payments yet' : 'अभी कोई भुगतान नहीं') +
                 '</p></div></div>';
         } else {
-            // Resolve names then render
-            Promise.all(payments.map(async r => {
+            const paymentsNewest = sortNewestFirst(payments);
+            Promise.all(paymentsNewest.map(async r => {
                 const ownerLabel = await getOwnerLabel(r.business_id);
                 return { r, ownerLabel };
             })).then(rows => {
@@ -2973,7 +2974,7 @@ window.renderCustomerUsageDashboard = async function () {
 
                 currentPayList.innerHTML = rows.map(({ r, ownerLabel }) => {
                     return '<div class="list-item"><div class="item-info">' +
-                        '<h4>' + (r.note || (currentLang === 'en' ? 'Cash' : 'नकद')) + '</h4>' +
+                        '<h4>' + (r.mode || r.note || (currentLang === 'en' ? 'Cash' : 'नकद')) + '</h4>' +
                         '<p>' + (r.date || '') + '</p>' +
                         '<p style="font-size:12px;color:var(--ios-blue);margin-top:2px;">' +
                         (currentLang === 'en' ? 'To: ' : 'को: ') + ownerLabel +
@@ -2984,6 +2985,55 @@ window.renderCustomerUsageDashboard = async function () {
         }
     }
 };
+
+/** Notify customer that a water bill needs their approval */
+async function notifyCustomerWaterApproval({
+    customerUid,
+    customerPhone,
+    ownerUid,
+    ownerName,
+    usageId,
+    amount,
+    duration,
+    date,
+    start,
+    end
+}) {
+    let toUid = customerUid || '';
+    if (!toUid && customerPhone) {
+        toUid = await resolveCustomerUid(customerPhone);
+    }
+    if (!toUid) {
+        console.warn('notifyCustomerWaterApproval: no customerUid — skip notify');
+        return;
+    }
+
+    const isHi = currentLang === 'hi';
+    const title = isHi ? 'पानी का बिल — स्वीकृति दें' : 'Water bill — please approve';
+    const body = isHi
+        ? ((ownerName || 'मालिक') + ' ने ₹' + (amount || 0) + ' का बिल भेजा। My Usage में चेक करें।')
+        : ((ownerName || 'Owner') + ' sent a bill of ₹' + (amount || 0) + '. Check My Usage.');
+
+    try {
+        await safeAddDoc(collection(db, 'notifications'), {
+            toUid: toUid,
+            type: 'water_approval',
+            title: title,
+            body: body,
+            usageId: usageId || '',
+            business_id: ownerUid || '',
+            amount: amount || 0,
+            duration: duration || 0,
+            date: date || '',
+            start: start || '',
+            end: end || '',
+            read: false,
+            createdAt: safeServerTimestamp()
+        });
+    } catch (e) {
+        console.error('notifyCustomerWaterApproval failed', e);
+    }
+}
 
 window.approveWaterEntry = async function (entryId) {
     try {
@@ -3051,7 +3101,14 @@ window.syncOwnerUsageFromServer = async function () {
                     status: r.status || 'pending',
                     approval_status: r.approval_status || 'awaiting_approval',
                     type: 'water',
-                    created_at: createdAt
+                    created_at: createdAt,
+                    created_at_ms: (typeof r.created_at_ms === 'number')
+                        ? r.created_at_ms
+                        : (createdAt && typeof createdAt.toMillis === 'function'
+                            ? createdAt.toMillis()
+                            : (createdAt && typeof createdAt.seconds === 'number'
+                                ? createdAt.seconds * 1000
+                                : (Date.parse((r.date || '') + 'T00:00:00') || 0)))
                 };
                 history.push(row);
                 if (!custHistory[cid]) custHistory[cid] = [];
@@ -3066,7 +3123,14 @@ window.syncOwnerUsageFromServer = async function () {
                     amount: r.amount,
                     status: r.status || 'pending',
                     approval_status: r.approval_status || 'awaiting_approval',
-                    created_at: createdAt
+                    created_at: createdAt,
+                    created_at_ms: (typeof r.created_at_ms === 'number')
+                        ? r.created_at_ms
+                        : (createdAt && typeof createdAt.toMillis === 'function'
+                            ? createdAt.toMillis()
+                            : (createdAt && typeof createdAt.seconds === 'number'
+                                ? createdAt.seconds * 1000
+                                : (Date.parse((r.date || '') + 'T00:00:00') || 0)))
                 });
             } else if (r.type === 'payment') {
                 if (!custHistory[cid]) custHistory[cid] = [];
@@ -3077,7 +3141,14 @@ window.syncOwnerUsageFromServer = async function () {
                     amount: r.amount,
                     mode: r.mode || (r.note === 'Cash' || r.note === 'UPI' || r.note === 'Online' || r.note === 'Bank' ? r.note : 'Cash'),
                     note: r.note || '',
-                    created_at: createdAt
+                    created_at: r.created_at || null,
+                    created_at_ms: (typeof r.created_at_ms === 'number')
+                        ? r.created_at_ms
+                        : (createdAt && typeof createdAt.toMillis === 'function'
+                            ? createdAt.toMillis()
+                            : (createdAt && typeof createdAt.seconds === 'number'
+                                ? createdAt.seconds * 1000
+                                : (Date.parse((r.date || '') + 'T00:00:00') || 0)))
                 });
             }
         });
@@ -3179,6 +3250,16 @@ window.startCustomerListeners = function () {
                     }));
                     renderCustomerLinkedTubewell();
                     showToast(data.body, 'error');
+                } else if (data.type === 'water_approval') {
+                    showToast(
+                        data.body || (currentLang === 'en'
+                            ? 'New water bill — please approve in My Usage'
+                            : 'नया पानी बिल — My Usage में स्वीकृति दें'),
+                        'info'
+                    );
+                    if (typeof renderCustomerUsageDashboard === 'function') {
+                        renderCustomerUsageDashboard();
+                    }
                 }
                 await safeUpdateDoc(doc(db, 'notifications', change.doc.id), { read: true });
             }
@@ -5348,7 +5429,24 @@ document.getElementById('save-water-btn').addEventListener('click', async () => 
             owner_phone: localStorage.getItem('user_phone') || '',
             tubewell_name: twLocal.name || 'Tubewell'
         };
-        const docRef = await safeAddDoc(collection(db, "water_usage"), payload);
+        const docRef = await safeAddDoc(collection(db, "water_usage"), {
+            ...payload,
+            created_at: safeServerTimestamp(),
+            created_at_ms: Date.now()
+        });
+
+        await notifyCustomerWaterApproval({
+            customerUid: cust.customerUid || payload.customer_uid || '',
+            customerPhone: cust.phone || payload.customer_phone || '',
+            ownerUid: ownerUid,
+            ownerName: ownerInfo.name || '',
+            usageId: docRef.id,
+            amount: amount,
+            duration: duration,
+            date: today,
+            start: timeStart.value,
+            end: timeEnd.value
+        });
 
         // Save to localStorage for dashboard
         const history = getWaterHistory();
@@ -5358,40 +5456,17 @@ document.getElementById('save-water-btn').addEventListener('click', async () => 
             date: today, start: timeStart.value, end: timeEnd.value, duration, rate, amount,
             status: 'pending', type: 'water'
         });
-        saveWaterHistory(history);
 
-        const custHistory = JSON.parse(localStorage.getItem('customer_history') || '{}');
-        if (!custHistory[customerId]) custHistory[customerId] = [];
-        custHistory[customerId].push({
-            id: docRef.id,
-            type: 'water',
-            date: today,
-            start: timeStart.value,
-            end: timeEnd.value,
-            duration,
-            rate,
-            amount,
-            status: 'pending'
-        });
-        localStorage.setItem('customer_history', JSON.stringify(custHistory));
-
-        if (!customerData[customerId]) customerData[customerId] = { name: cust.name || '', phone: cust.phone || '', history: [] };
-        customerData[customerId].history.push({
-            id: docRef.id,
-            type: 'water',
-            date: today,
-            start: timeStart.value,
-            end: timeEnd.value,
-            duration,
-            rate,
-            amount,
-            status: 'pending'
-        });
+        await syncOwnerUsageFromServer();
 
         updateDashboardStats();
         renderPendingPayments();
-        showToast(currentLang === 'en' ? "Record Saved!" : "हिसाब सेव हो गया!", "success");
         closeModal('water-modal');
+        showToast(currentLang === 'en' ? "Record Saved!" : "हिसाब सेव हो गया!", "success");
+
+        if (customerId) {
+            openCustomerDetail(customerId);
+        }
     } catch (e) {
         console.error(e);
         showToast("Error saving data.", "error");
@@ -5598,16 +5673,23 @@ window.openCustomerDetail = async function (id) {
         }
     }
 
-    // Sync from server to get latest approval_status
     await syncOwnerUsageFromServer();
 
     const historyList = document.getElementById('customer-history-list');
-    // Newest at top by time added (created_at / date+time) — never rely on array order alone
     const sortedHistory = sortNewestFirst(customerData[id].history || []);
 
-    document.getElementById('customer-detail-name').innerText = customerData[id].name;
+    // Dedupe by Firebase id
+    const seen = new Set();
+    const uniqueHistory = sortedHistory.filter(e => {
+        const key = e.id || (e.date + '|' + (e.start || '') + '|' + e.amount + '|' + e.type);
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+    });
 
-    if (sortedHistory.length === 0) {
+    document.getElementById('customer-detail-name').innerText = displayName || customerData[id].name;
+
+    if (uniqueHistory.length === 0) {
         historyList.innerHTML = '<div class="list-item"><div class="item-info"><p style="color: var(--ios-gray);">No entries yet.</p></div></div>';
         document.getElementById('cust-total-due').innerText = '₹0';
         document.getElementById('cust-total-paid').innerText = '₹0';
@@ -5617,52 +5699,73 @@ window.openCustomerDetail = async function (id) {
         return;
     }
 
-    // Settlement uses oldest-first (accounting only). Does NOT write back into entry objects.
-    const waters = sortOldestFirst(sortedHistory.filter(e => e.type === 'water'));
-    const pays = sortedHistory.filter(e => e.type === 'payment');
+    // Settlement: oldest-first, display-only (never mutates entry.amount)
+    const waters = sortOldestFirst(
+        uniqueHistory.filter(e => e.type === 'water' && isApprovedForLedger(e))
+    );
+    const pays = uniqueHistory.filter(e => e.type === 'payment');
     const { settled, partial } = getSettledWaterKeys(waters, pays);
 
     let totalDue = 0, totalPaid = 0, totalHours = 0, lastEntry = '-';
 
-    historyList.innerHTML = sortedHistory.map((entry, idx) => {
+    historyList.innerHTML = uniqueHistory.map((entry, idx) => {
         if (entry.type === 'water') {
-            totalHours += entry.duration || 0;
+            if (isApprovedForLedger(entry)) {
+                totalHours += entry.duration || 0;
+            }
             if (idx === 0) lastEntry = entry.date;
+
             const wkey = waterKey(entry);
             const isSettled = entry.status === 'paid' || settled.has(wkey);
             const partialDue = partial.get(wkey) || 0;
-            if (!isSettled) totalDue += entry.amount || 0;
-            // display only — original entry.amount / duration / rate stay untouched
-            const displayAmount = partialDue > 0 ? partialDue : entry.amount;
-            const approvalStatus = entry.approval_status || 'awaiting_approval';
-            // --- VILLAGE-FRIENDLY STATUS BADGES ---
-            let statusBadgeHtml = '';
-            let editButton = '';
-            let statusBannerColor = '';
-            let statusBannerText = '';
 
-            if (approvalStatus === 'awaiting_approval') {
-                statusBannerColor = '#FF9500';
-                statusBannerText = currentLang === 'en' ? '⏳ Waiting for customer approval' : '⏳ ग्राहक की स्वीकृति का इंतजार';
-                statusBadgeHtml = '<span style="display:inline-block;font-size:13px;font-weight:600;color:#FF9500;background:rgba(255,149,0,0.10);padding:6px 14px;border-radius:20px;">' + statusBannerText + '</span>';
-                editButton = '<button class="btn-small" style="margin-top:10px;padding:10px 20px;font-size:15px;background:var(--ios-blue);" onclick="openEditWaterModal(\'' + (entry.id || '') + '\')">' + (currentLang === 'en' ? '✏️ Edit Entry' : '✏️ एडिट करें') + '</button>';
-            } else if (approvalStatus === 'approved') {
-                statusBannerColor = '#34C759';
-                statusBannerText = currentLang === 'en' ? '✅ Approved by customer' : '✅ ग्राहक ने स्वीकार किया';
-                statusBadgeHtml = '<span style="display:inline-block;font-size:13px;font-weight:600;color:#34C759;background:rgba(52,199,89,0.10);padding:6px 14px;border-radius:20px;">' + statusBannerText + '</span>';
-            } else if (approvalStatus === 'rejected') {
-                statusBannerColor = '#FF3B30';
-                statusBannerText = currentLang === 'en' ? '❌ Customer rejected — please edit' : '❌ ग्राहक ने अस्वीकार किया — एडिट करें';
-                statusBadgeHtml = '<span style="display:inline-block;font-size:13px;font-weight:600;color:#FF3B30;background:rgba(255,59,48,0.10);padding:6px 14px;border-radius:20px;">' + statusBannerText + '</span>';
-                editButton = '<button class="btn-small" style="margin-top:10px;padding:10px 20px;font-size:15px;background:var(--ios-blue);" onclick="openEditWaterModal(\'' + (entry.id || '') + '\')">' + (currentLang === 'en' ? '✏️ Edit Entry' : '✏️ एडिट करें') + '</button>';
+            // Totals: remaining due only
+            if (isApprovedForLedger(entry) && !isSettled) {
+                totalDue += partialDue > 0 ? partialDue : (entry.amount || 0);
             }
 
-            // --- PAYMENT STATUS (Big visual) ---
-            const statusLabel = isSettled ? 'PAID' : (partialDue > 0 ? 'PARTIAL' : 'PENDING');
-            const statusColor = isSettled ? '#34C759' : (partialDue > 0 ? '#FF9500' : '#FF3B30');
-            const statusBg = isSettled ? 'rgba(52,199,89,0.10)' : (partialDue > 0 ? 'rgba(255,149,0,0.10)' : 'rgba(255,59,48,0.10)');
+            // ALWAYS show original bill amount
+            const originalAmount = entry.amount || 0;
+            const approvalStatus = entry.approval_status || 'awaiting_approval';
 
-            // --- FORMAT DURATION AS HOURS + MINUTES (not decimal) ---
+            let statusBadgeHtml = '';
+            let editButton = '';
+
+            if (approvalStatus === 'awaiting_approval') {
+                statusBadgeHtml = '<span style="display:inline-block;font-size:13px;font-weight:600;color:#FF9500;background:rgba(255,149,0,0.10);padding:6px 14px;border-radius:20px;">' +
+                    (currentLang === 'en' ? '⏳ Waiting for customer approval' : '⏳ ग्राहक की स्वीकृति का इंतजार') + '</span>';
+                editButton = '<button class="btn-small" style="margin-top:10px;padding:10px 20px;font-size:15px;background:var(--ios-blue);" onclick="openEditWaterModal(\'' + (entry.id || '') + '\')">' +
+                    (currentLang === 'en' ? '✏️ Edit Entry' : '✏️ एडिट करें') + '</button>';
+            } else if (approvalStatus === 'approved') {
+                statusBadgeHtml = '<span style="display:inline-block;font-size:13px;font-weight:600;color:#34C759;background:rgba(52,199,89,0.10);padding:6px 14px;border-radius:20px;">' +
+                    (currentLang === 'en' ? '✅ Approved by customer' : '✅ ग्राहक ने स्वीकार किया') + '</span>';
+            } else if (approvalStatus === 'rejected') {
+                statusBadgeHtml = '<span style="display:inline-block;font-size:13px;font-weight:600;color:#FF3B30;background:rgba(255,59,48,0.10);padding:6px 14px;border-radius:20px;">' +
+                    (currentLang === 'en' ? '❌ Customer rejected — please edit' : '❌ ग्राहक ने अस्वीकार किया — एडिट करें') + '</span>';
+                editButton = '<button class="btn-small" style="margin-top:10px;padding:10px 20px;font-size:15px;background:var(--ios-blue);" onclick="openEditWaterModal(\'' + (entry.id || '') + '\')">' +
+                    (currentLang === 'en' ? '✏️ Edit Entry' : '✏️ एडिट करें') + '</button>';
+            }
+
+            // Payment status on original bill
+            let statusLabel, statusColor, statusBg, stillDueLine = '';
+            if (isSettled) {
+                statusLabel = currentLang === 'en' ? 'PAID' : 'चुकाया';
+                statusColor = '#34C759';
+                statusBg = 'rgba(52,199,89,0.10)';
+            } else if (partialDue > 0) {
+                statusLabel = currentLang === 'en' ? 'PARTIAL' : 'आंशिक';
+                statusColor = '#FF9500';
+                statusBg = 'rgba(255,149,0,0.10)';
+                stillDueLine =
+                    '<div style="margin-top:8px;font-size:14px;font-weight:600;color:#FF9500;">' +
+                    (currentLang === 'en' ? 'Still due: ₹' : 'अभी बाकी: ₹') + partialDue +
+                    '</div>';
+            } else {
+                statusLabel = currentLang === 'en' ? 'PENDING' : 'बाकी';
+                statusColor = '#FF3B30';
+                statusBg = 'rgba(255,59,48,0.10)';
+            }
+
             const totalMinutes = Math.round((entry.duration || 0) * 60);
             const durHours = Math.floor(totalMinutes / 60);
             const durMins = totalMinutes % 60;
@@ -5677,85 +5780,85 @@ window.openCustomerDetail = async function (id) {
                 else durationText = durMins + ' min';
             }
 
-            // --- VILLAGE-FRIENDLY CARD LAYOUT ---
             return '<div class="list-item" style="flex-direction:column;align-items:stretch;gap:12px;padding:16px;">' +
 
-                // ROW 1: Header with type + approval badge
                 '<div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">' +
-                '<h4 style="font-size:18px;font-weight:700;color:var(--text);">' + (currentLang === 'en' ? '💧 Water Usage' : '💧 पानी का उपयोग') + '</h4>' +
+                '<h4 style="font-size:18px;font-weight:700;color:var(--text);">' +
+                (currentLang === 'en' ? '💧 Water Usage' : '💧 पानी का उपयोग') + '</h4>' +
                 statusBadgeHtml +
                 '</div>' +
 
-                // ROW 2: Big amount + payment status (most important!)
+                // Big amount = ORIGINAL bill always
                 '<div style="display:flex;align-items:center;justify-content:space-between;background:' + statusBg + ';padding:14px 16px;border-radius:14px;">' +
                 '<div>' +
-                '<div style="font-size:32px;font-weight:800;color:' + statusColor + ';letter-spacing:-0.5px;">₹' + displayAmount + '</div>' +
+                '<div style="font-size:32px;font-weight:800;color:' + statusColor + ';letter-spacing:-0.5px;">₹' + originalAmount + '</div>' +
                 '<div style="font-size:13px;color:' + statusColor + ';font-weight:600;margin-top:2px;text-transform:uppercase;">' + statusLabel + '</div>' +
+                stillDueLine +
                 '</div>' +
                 '<div style="text-align:right;">' +
-                '<div style="font-size:14px;color:var(--ios-gray);font-weight:500;">' + (currentLang === 'en' ? 'Total Bill' : 'कुल बिल') + '</div>' +
+                '<div style="font-size:14px;color:var(--ios-gray);font-weight:500;">' +
+                (currentLang === 'en' ? 'Total Bill' : 'कुल बिल') + '</div>' +
                 '</div>' +
                 '</div>' +
 
-                // ROW 3: Date (standalone, easy to read)
                 '<div style="display:flex;align-items:center;gap:10px;">' +
                 '<span style="font-size:20px;">📅</span>' +
-                '<span style="font-size:16px;font-weight:600;color:var(--text);">' + entry.date + '</span>' +
+                '<span style="font-size:16px;font-weight:600;color:var(--text);">' + (entry.date || '') + '</span>' +
                 '</div>' +
 
-                // ROW 4: Time details with clear labels
                 '<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">' +
                 '<div style="background:var(--bg);padding:12px;border-radius:12px;">' +
-                '<div style="font-size:12px;color:var(--ios-gray);font-weight:500;text-transform:uppercase;margin-bottom:4px;">' + (currentLang === 'en' ? '▶️ Started' : '▶️ शुरू') + '</div>' +
-                '<div style="font-size:20px;font-weight:700;color:var(--text);">' + entry.start + '</div>' +
+                '<div style="font-size:12px;color:var(--ios-gray);font-weight:500;text-transform:uppercase;margin-bottom:4px;">' +
+                (currentLang === 'en' ? '▶️ Started' : '▶️ शुरू') + '</div>' +
+                '<div style="font-size:20px;font-weight:700;color:var(--text);">' + (entry.start || entry.start_time || '-') + '</div>' +
                 '</div>' +
                 '<div style="background:var(--bg);padding:12px;border-radius:12px;">' +
-                '<div style="font-size:12px;color:var(--ios-gray);font-weight:500;text-transform:uppercase;margin-bottom:4px;">' + (currentLang === 'en' ? '⏹️ Ended' : '⏹️ बंद') + '</div>' +
-                '<div style="font-size:20px;font-weight:700;color:var(--text);">' + entry.end + '</div>' +
+                '<div style="font-size:12px;color:var(--ios-gray);font-weight:500;text-transform:uppercase;margin-bottom:4px;">' +
+                (currentLang === 'en' ? '⏹️ Ended' : '⏹️ बंद') + '</div>' +
+                '<div style="font-size:20px;font-weight:700;color:var(--text);">' + (entry.end || entry.end_time || '-') + '</div>' +
                 '</div>' +
                 '</div>' +
 
-                // ROW 5: Duration (standalone, farmer-friendly)
                 '<div style="display:flex;align-items:center;gap:10px;background:var(--bg);padding:12px 16px;border-radius:12px;">' +
                 '<span style="font-size:20px;">⏱️</span>' +
                 '<div>' +
-                '<div style="font-size:12px;color:var(--ios-gray);font-weight:500;">' + (currentLang === 'en' ? 'Total Time' : 'कुल समय') + '</div>' +
+                '<div style="font-size:12px;color:var(--ios-gray);font-weight:500;">' +
+                (currentLang === 'en' ? 'Total Time' : 'कुल समय') + '</div>' +
                 '<div style="font-size:18px;font-weight:700;color:var(--ios-blue);">' + durationText + '</div>' +
                 '</div>' +
                 '</div>' +
 
-                // ROW 6: Rate info (small, secondary)
                 '<div style="font-size:13px;color:var(--ios-gray);padding-left:4px;">' +
                 '₹' + (entry.rate || 0) + (currentLang === 'en' ? '/hour rate' : '/घंटे का रेट') +
                 '</div>' +
 
-                // ROW 7: Edit button (if needed)
                 editButton +
-
-                '</div>';
-        } else {
-            totalPaid += entry.amount || 0;
-            if (idx === 0) lastEntry = entry.date;
-            const modeLabel = entry.mode || 'Cash';
-            const modeEmoji = modeLabel === 'Cash' ? '💵' : (modeLabel === 'UPI' ? '📱' : '💳');
-            return '<div class="list-item" style="flex-direction:column;align-items:stretch;gap:10px;padding:16px;">' +
-                '<div style="display:flex;justify-content:space-between;align-items:center;">' +
-                '<h4 style="font-size:18px;font-weight:700;">' + modeEmoji + ' ' + (currentLang === 'en' ? 'Payment Received' : 'भुगतान प्राप्त') + '</h4>' +
-                '<span style="display:inline-block;font-size:13px;font-weight:600;color:#34C759;background:rgba(52,199,89,0.10);padding:6px 14px;border-radius:20px;">' + (currentLang === 'en' ? '✅ Paid' : '✅ चुकाया') + '</span>' +
-                '</div>' +
-                '<div style="display:flex;align-items:center;justify-content:space-between;background:rgba(52,199,89,0.08);padding:14px 16px;border-radius:14px;">' +
-                '<div style="font-size:32px;font-weight:800;color:#34C759;letter-spacing:-0.5px;">₹' + entry.amount + '</div>' +
-                '<div style="text-align:right;">' +
-                '<div style="font-size:14px;color:var(--ios-gray);font-weight:500;">' + modeLabel + '</div>' +
-                '</div>' +
-                '</div>' +
-                '<div style="display:flex;align-items:center;gap:10px;">' +
-                '<span style="font-size:20px;">📅</span>' +
-                '<span style="font-size:16px;font-weight:600;">' + entry.date + '</span>' +
-                '</div>' +
-                (entry.note ? '<div style="font-size:14px;color:var(--ios-gray);background:var(--bg);padding:10px 14px;border-radius:10px;">📝 ' + entry.note + '</div>' : '') +
                 '</div>';
         }
+
+        // Payment
+        totalPaid += entry.amount || 0;
+        if (idx === 0) lastEntry = entry.date;
+        const modeLabel = entry.mode || 'Cash';
+        const modeEmoji = modeLabel === 'Cash' ? '💵' : (modeLabel === 'UPI' ? '📱' : '💳');
+        return '<div class="list-item" style="flex-direction:column;align-items:stretch;gap:10px;padding:16px;">' +
+            '<div style="display:flex;justify-content:space-between;align-items:center;">' +
+            '<h4 style="font-size:18px;font-weight:700;">' + modeEmoji + ' ' +
+            (currentLang === 'en' ? 'Payment Received' : 'भुगतान प्राप्त') + '</h4>' +
+            '<span style="display:inline-block;font-size:13px;font-weight:600;color:#34C759;background:rgba(52,199,89,0.10);padding:6px 14px;border-radius:20px;">' +
+            (currentLang === 'en' ? '✅ Paid' : '✅ चुकाया') + '</span>' +
+            '</div>' +
+            '<div style="display:flex;align-items:center;justify-content:space-between;background:rgba(52,199,89,0.08);padding:14px 16px;border-radius:14px;">' +
+            '<div style="font-size:32px;font-weight:800;color:#34C759;letter-spacing:-0.5px;">₹' + (entry.amount || 0) + '</div>' +
+            '<div style="text-align:right;">' +
+            '<div style="font-size:14px;color:var(--ios-gray);font-weight:500;">' + modeLabel + '</div>' +
+            '</div></div>' +
+            '<div style="display:flex;align-items:center;gap:10px;">' +
+            '<span style="font-size:20px;">📅</span>' +
+            '<span style="font-size:16px;font-weight:600;">' + (entry.date || '') + '</span>' +
+            '</div>' +
+            (entry.note ? '<div style="font-size:14px;color:var(--ios-gray);background:var(--bg);padding:10px 14px;border-radius:10px;">📝 ' + entry.note + '</div>' : '') +
+            '</div>';
     }).join('');
 
     document.getElementById('cust-total-due').innerText = '₹' + Math.round(totalDue);
@@ -5936,6 +6039,21 @@ window.saveEditWater = async function () {
             edited_by: localStorage.getItem('user_uid')
         });
 
+        // after successful updateDoc ...
+        const cust = getCustomerById(window.currentCustomerId) || {};
+        await notifyCustomerWaterApproval({
+            customerUid: cust.customerUid || '',
+            customerPhone: cust.phone || '',
+            ownerUid: localStorage.getItem('user_uid'),
+            ownerName: (JSON.parse(localStorage.getItem('user_info') || '{}').name || ''),
+            usageId: entryId,
+            amount,
+            duration,
+            date,
+            start,
+            end,
+        });
+
         // Update local history
         const history = getWaterHistory();
         const idx = history.findIndex(h => h.id === entryId);
@@ -6029,6 +6147,7 @@ window.savePayment = async function () {
     const ownerUid = localStorage.getItem('user_uid');
 
     try {
+        const nowMs = Date.now();
         await safeAddDoc(collection(db, 'water_usage'), {
             business_id: ownerUid,
             customer_id: window.currentCustomerId,
@@ -6042,8 +6161,9 @@ window.savePayment = async function () {
             type: 'payment',
             date,
             created_at: safeServerTimestamp(),
+            created_at_ms: nowMs,   // ← plain number, always sortable
             owner_name: (JSON.parse(localStorage.getItem('user_info') || '{}').name || ''),
-            owner_phone: localStorage.getItem('user_phone') || '',
+            owner_phone: localStorage.getItem('user_phone') || ''
         });
     } catch (e) {
         console.error('Payment save FS failed', e);
@@ -6058,7 +6178,9 @@ window.savePayment = async function () {
     const modeEl = document.getElementById('payment-mode');
     if (modeEl) modeEl.value = 'Cash';
     closeModal('payment-modal');
-    openCustomerDetail(window.currentCustomerId);
+    if (window.currentCustomerId) {
+        openCustomerDetail(window.currentCustomerId);
+    }
     updateDashboardStats();
     renderPendingPayments();
     showToast(currentLang === 'en' ? "Payment Saved!" : "भुगतान सेव हो गया!", "success");
@@ -6732,203 +6854,3 @@ populateCustomerDropdowns();
 
 
 
-
-/* ═══════════════════════════════════════════════════════════════
-   DEVELOPER ONLY — DATABASE CLEANUP UTILITY
-   Run from browser console: devClearDatabase('your-phone-number')
-   ═══════════════════════════════════════════════════════════════ */
-
-window.devClearDatabase = async function (developerPhone) {
-    // ── GUARD: Only you can run this ──
-    const ALLOWED_DEV_PHONE = '7985381362'; // ←←← CHANGE THIS TO YOUR REAL PHONE NUMBER
-
-    if (!developerPhone || developerPhone !== ALLOWED_DEV_PHONE) {
-        console.error('❌ ACCESS DENIED: Invalid or missing developer phone.');
-        console.error('   Usage: devClearDatabase("your-10-digit-phone")');
-        return { success: false, error: 'Unauthorized' };
-    }
-
-    // ── DOUBLE CONFIRM via console ──
-    console.log('%c⚠️  DATABASE WIPE REQUESTED', 'color: #FF3B30; font-size: 16px; font-weight: bold;');
-    console.log('%cThis will PERMANENTLY DELETE all data from Firestore:', 'color: #FF9500; font-size: 13px;');
-    console.log('  • users (except your account)');
-    console.log('  • tubewells');
-    console.log('  • customers');
-    console.log('  • water_usage');
-    console.log('  • queues');
-    console.log('  • link_requests');
-    console.log('  • customer_links');
-    console.log('  • notifications');
-    console.log('  • announcements');
-    console.log('%cTo confirm, run: devClearDatabaseConfirm("' + developerPhone + '")', 'color: #007AFF; font-size: 13px; font-weight: bold;');
-
-    // Store intent temporarily
-    window._devClearPending = true;
-    window._devClearPhone = developerPhone;
-
-    return { success: false, status: 'pending_confirmation', message: 'Call devClearDatabaseConfirm() to proceed' };
-};
-
-window.devClearDatabaseConfirm = async function (developerPhone) {
-    const ALLOWED_DEV_PHONE = '7985381362'; // ←←← SAME PHONE NUMBER AS ABOVE
-
-    // ── Validate confirmation ──
-    if (!window._devClearPending || developerPhone !== ALLOWED_DEV_PHONE || developerPhone !== window._devClearPhone) {
-        console.error('❌ No pending wipe request or phone mismatch. Run devClearDatabase() first.');
-        return { success: false, error: 'No pending confirmation' };
-    }
-
-    console.log('%c🧹 STARTING DATABASE WIPE...', 'color: #FF3B30; font-size: 14px; font-weight: bold;');
-
-    const results = {
-        collections: {},
-        localStorageCleared: false,
-        errors: []
-    };
-
-    // ── Helper: delete all docs in a collection ──
-    async function wipeCollection(collectionName, whereClause) {
-        try {
-            let q;
-            if (whereClause) {
-                q = query(collection(db, collectionName), whereClause);
-            } else {
-                q = query(collection(db, collectionName));
-            }
-            const snap = await getDocs(q);
-            let count = 0;
-            const batchDeletions = [];
-            snap.forEach(d => {
-                batchDeletions.push(safeDeleteDoc(doc(db, collectionName, d.id)));
-                count++;
-            });
-            await Promise.all(batchDeletions);
-            results.collections[collectionName] = { deleted: count, error: null };
-            console.log('  ✅ ' + collectionName + ': deleted ' + count + ' docs');
-            return count;
-        } catch (e) {
-            results.collections[collectionName] = { deleted: 0, error: e.message };
-            results.errors.push({ collection: collectionName, error: e.message });
-            console.error('  ❌ ' + collectionName + ' failed:', e.message);
-            return 0;
-        }
-    }
-
-    // ── 1. WATER USAGE (biggest collection first) ──
-    await wipeCollection('water_usage');
-
-    // ── 2. QUEUES ──
-    await wipeCollection('queues');
-
-    // ── 3. CUSTOMERS ──
-    await wipeCollection('customers');
-
-    // ── 4. CUSTOMER LINKS ──
-    await wipeCollection('customer_links');
-
-    // ── 5. LINK REQUESTS ──
-    await wipeCollection('link_requests');
-
-    // ── 6. NOTIFICATIONS ──
-    await wipeCollection('notifications');
-
-    // ── 7. ANNOUNCEMENTS ──
-    await wipeCollection('announcements');
-
-    // ── 8. TUBEWELLS (except keep structure if you want) ──
-    await wipeCollection('tubewells');
-
-    // ── 9. USERS (delete ALL except your dev account) ──
-    try {
-        const usersSnap = await getDocs(query(collection(db, 'users')));
-        let userCount = 0;
-        const userDeletions = [];
-        usersSnap.forEach(d => {
-            const data = d.data();
-            // Skip your own account
-            if (data.phone === ALLOWED_DEV_PHONE) {
-                console.log('  👤 Skipping your account: ' + d.id);
-                return;
-            }
-            userDeletions.push(safeDeleteDoc(doc(db, 'users', d.id)));
-            userCount++;
-        });
-        await Promise.all(userDeletions);
-        results.collections['users'] = { deleted: userCount, error: null };
-        console.log('  ✅ users: deleted ' + userCount + ' accounts (kept yours)');
-    } catch (e) {
-        results.collections['users'] = { deleted: 0, error: e.message };
-        results.errors.push({ collection: 'users', error: e.message });
-        console.error('  ❌ users failed:', e.message);
-    }
-
-    // ── 10. CLEAR LOCALSTORAGE (except theme/lang preferences) ──
-    try {
-        const keepKeys = ['theme', 'app_lang'];
-        const keysToRemove = [];
-        for (let i = 0; i < localStorage.length; i++) {
-            const key = localStorage.key(i);
-            if (!keepKeys.includes(key)) {
-                keysToRemove.push(key);
-            }
-        }
-        keysToRemove.forEach(key => localStorage.removeItem(key));
-        results.localStorageCleared = true;
-        console.log('  ✅ localStorage: cleared ' + keysToRemove.length + ' keys (kept theme, lang)');
-    } catch (e) {
-        results.errors.push({ collection: 'localStorage', error: e.message });
-        console.error('  ❌ localStorage clear failed:', e.message);
-    }
-
-    // ── Reset pending flag ──
-    window._devClearPending = false;
-    window._devClearPhone = null;
-
-    // ── Final report ──
-    const totalDeleted = Object.values(results.collections).reduce((sum, c) => sum + (c.deleted || 0), 0);
-
-    console.log('%c═══════════════════════════════════════', 'color: #34C759;');
-    console.log('%c✅ WIPE COMPLETE', 'color: #34C759; font-size: 16px; font-weight: bold;');
-    console.log('Total documents deleted: ' + totalDeleted);
-    console.log('Errors: ' + results.errors.length);
-    if (results.errors.length > 0) {
-        console.log('%cErrors:', 'color: #FF3B30;');
-        results.errors.forEach(e => console.log('  • ' + e.collection + ': ' + e.error));
-    }
-    console.log('%c═══════════════════════════════════════', 'color: #34C759;');
-    console.log('%c🔄 Reload the page to see clean state.', 'color: #007AFF; font-size: 13px;');
-
-    return { success: true, results: results, totalDeleted: totalDeleted };
-};
-
-/* ── Quick helper: just check what's in the DB (safe, no delete) ── */
-window.devCheckDatabase = async function () {
-    const collections = ['users', 'tubewells', 'customers', 'water_usage', 'queues', 'link_requests', 'customer_links', 'notifications', 'announcements'];
-    const report = {};
-
-    console.log('%c📊 DATABASE REPORT', 'color: #007AFF; font-size: 14px; font-weight: bold;');
-
-    for (const col of collections) {
-        try {
-            const snap = await getDocs(query(collection(db, col)));
-            report[col] = snap.size;
-            const color = snap.size > 100 ? '#FF3B30' : (snap.size > 10 ? '#FF9500' : '#34C759');
-            console.log('%c  ' + col + ': ' + snap.size + ' docs', 'color: ' + color + ';');
-        } catch (e) {
-            report[col] = 'error: ' + e.message;
-            console.log('%c  ' + col + ': ERROR - ' + e.message, 'color: #FF3B30;');
-        }
-    }
-
-    console.log('%cLocalStorage keys: ' + localStorage.length, 'color: var(--ios-gray);');
-    for (let i = 0; i < Math.min(localStorage.length, 20); i++) {
-        const key = localStorage.key(i);
-        const val = localStorage.getItem(key);
-        const preview = val.length > 50 ? val.substring(0, 50) + '...' : val;
-        console.log('  • ' + key + ' = ' + preview);
-    }
-
-    return report;
-};
-
-console.log('%c🔧 Dev tools loaded: devCheckDatabase() | devClearDatabase(\"your-phone\")', 'color: #007AFF; font-size: 11px;');

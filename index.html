@@ -530,21 +530,19 @@
             </header>
 
             <div class="stats-grid" style="margin-bottom: 16px;">
-                <div class="stat-card">
-                    <span class="stat-label">Total Hours</span>
-                    <span class="stat-value text-blue" id="cust-total-hrs">0 <small>Hrs</small></span>
+                <div class="stat-card" style="padding: 20px; border-radius: 16px;">
+                    <span class="stat-label" style="font-size: 13px; margin-bottom: 6px;">Total Due</span>
+                    <span class="stat-value text-red" id="bahi-total-due" style="font-size: 28px;">₹0</span>
                 </div>
-                <div class="stat-card outline-red">
-                    <span class="stat-label">Total Due</span>
-                    <span class="stat-value text-red" id="cust-total-due-display">₹0</span>
+                <div class="stat-card" style="padding: 20px; border-radius: 16px;">
+                    <span class="stat-label" style="font-size: 13px; margin-bottom: 6px;">Total Paid</span>
+                    <span class="stat-value text-green" id="bahi-total-paid" style="font-size: 28px;">₹0</span>
                 </div>
-                <div class="stat-card">
-                    <span class="stat-label">Total Paid</span>
-                    <span class="stat-value text-green" id="cust-total-paid-display">₹0</span>
-                </div>
-                <div class="stat-card">
-                    <span class="stat-label" data-i18n="myQueuePosition">My queue position</span>
-                    <span class="stat-value text-blue" id="cust-queue-position">-</span>
+                <div class="stat-card" style="padding: 20px; border-radius: 16px; grid-column: 1 / -1;">
+                    <span class="stat-label" style="font-size: 13px; margin-bottom: 6px;">Balance</span>
+                    <span class="stat-value text-blue" id="bahi-balance" style="font-size: 32px;">₹0</span>
+                    <p style="font-size: 12px; color: var(--ios-gray); margin-top: 4px;" id="bahi-balance-hint">All
+                        clear!</p>
                 </div>
             </div>
 

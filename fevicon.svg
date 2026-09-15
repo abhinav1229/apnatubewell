@@ -1,4 +1,482 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
-  <rect width="100" height="100" rx="22" fill="#007AFF"/>
-  <path d="M50 15v70M65 25H42a12 12 0 0 0 0 24h18a12 12 0 0 1 0 24H28" stroke="white" stroke-width="8" stroke-linecap="round" fill="none"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+
+  <defs>
+
+    <!-- Sky Gradient -->
+    <linearGradient id="sky" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#4DA9FF"/>
+      <stop offset="48%" stop-color="#79C8FF"/>
+      <stop offset="100%" stop-color="#D9F3FF"/>
+    </linearGradient>
+
+    <!-- Ground Gradient -->
+    <linearGradient id="ground" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#8BC34A"/>
+      <stop offset="100%" stop-color="#3F7D32"/>
+    </linearGradient>
+
+    <!-- Field Gradient -->
+    <linearGradient id="field" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#B6D95B"/>
+      <stop offset="100%" stop-color="#679A35"/>
+    </linearGradient>
+
+    <!-- Water Gradient -->
+    <linearGradient id="water" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#E8FAFF"/>
+      <stop offset="45%" stop-color="#5ED7FF"/>
+      <stop offset="100%" stop-color="#168BD0"/>
+    </linearGradient>
+
+    <!-- Wheat Gradient -->
+    <linearGradient id="wheat" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#FFE78A"/>
+      <stop offset="100%" stop-color="#D69A28"/>
+    </linearGradient>
+
+    <!-- Shadow -->
+    <filter id="shadow" x="-30%" y="-30%" width="160%" height="160%">
+      <feDropShadow
+        dx="0"
+        dy="8"
+        stdDeviation="8"
+        flood-opacity="0.25"/>
+    </filter>
+
+    <!-- Clip -->
+    <clipPath id="round">
+      <rect width="512" height="512" rx="105"/>
+    </clipPath>
+
+  </defs>
+
+
+  <!-- APP BACKGROUND -->
+
+  <g clip-path="url(#round)">
+
+    <!-- Sky -->
+    <rect width="512" height="512" fill="url(#sky)"/>
+
+
+    <!-- Sun -->
+
+    <circle
+      cx="405"
+      cy="100"
+      r="45"
+      fill="#FFE57A"
+      opacity="0.95"/>
+
+    <circle
+      cx="405"
+      cy="100"
+      r="62"
+      fill="#FFE57A"
+      opacity="0.18"/>
+
+
+    <!-- Distant Hills -->
+
+    <path
+      d="M0 265
+         C70 205 120 225 170 250
+         C220 180 280 190 330 245
+         C380 195 440 210 512 255
+         L512 330
+         L0 330 Z"
+      fill="#76A96A"
+      opacity="0.75"/>
+
+    <path
+      d="M0 285
+         C85 240 125 260 190 285
+         C255 225 315 235 365 275
+         C420 235 465 250 512 280
+         L512 340
+         L0 340 Z"
+      fill="#60965A"
+      opacity="0.8"/>
+
+
+    <!-- Village House -->
+
+    <g filter="url(#shadow)">
+
+      <!-- House Body -->
+
+      <path
+        d="M78 265
+           L150 220
+           L222 265
+           L222 330
+           L78 330 Z"
+        fill="#E9C58D"/>
+
+      <!-- Roof -->
+
+      <path
+        d="M62 267
+           L150 205
+           L238 267
+           L220 280
+           L150 230
+           L80 280 Z"
+        fill="#9B5536"/>
+
+      <!-- Roof Highlight -->
+
+      <path
+        d="M82 263
+           L150 216
+           L218 263"
+        fill="none"
+        stroke="#C8794C"
+        stroke-width="10"
+        stroke-linecap="round"/>
+
+      <!-- Door -->
+
+      <rect
+        x="137"
+        y="274"
+        width="32"
+        height="56"
+        rx="3"
+        fill="#75442F"/>
+
+      <circle
+        cx="162"
+        cy="303"
+        r="3"
+        fill="#F6D47B"/>
+
+      <!-- Window -->
+
+      <rect
+        x="94"
+        y="274"
+        width="28"
+        height="27"
+        rx="3"
+        fill="#6EC5E8"/>
+
+      <path
+        d="M108 274V301M94 287H122"
+        stroke="#F4E6B5"
+        stroke-width="4"/>
+
+    </g>
+
+
+    <!-- Trees -->
+
+    <g>
+
+      <!-- Left Tree -->
+
+      <rect
+        x="42"
+        y="235"
+        width="15"
+        height="72"
+        rx="7"
+        fill="#70452D"/>
+
+      <circle cx="49" cy="218" r="32" fill="#3F803C"/>
+      <circle cx="27" cy="231" r="23" fill="#4D9141"/>
+      <circle cx="70" cy="232" r="25" fill="#43883D"/>
+      <circle cx="49" cy="193" r="23" fill="#579B45"/>
+
+      <!-- Right Tree -->
+
+      <rect
+        x="442"
+        y="240"
+        width="15"
+        height="70"
+        rx="7"
+        fill="#70452D"/>
+
+      <circle cx="449" cy="218" r="30" fill="#3E813C"/>
+      <circle cx="428" cy="232" r="22" fill="#4F9442"/>
+      <circle cx="472" cy="233" r="23" fill="#43883D"/>
+      <circle cx="449" cy="194" r="22" fill="#589E47"/>
+
+    </g>
+
+
+    <!-- Ground -->
+
+    <path
+      d="M0 310
+         C110 285 205 320 290 305
+         C380 288 445 305 512 295
+         L512 512
+         L0 512 Z"
+      fill="url(#ground)"/>
+
+
+    <!-- Crop Field -->
+
+    <path
+      d="M0 365
+         C100 335 195 365 270 345
+         C365 320 440 340 512 325
+         L512 512
+         L0 512 Z"
+      fill="url(#field)"/>
+
+
+    <!-- Field Lines -->
+
+    <path
+      d="M-30 410
+         C100 380 205 405 285 382
+         C380 355 450 375 540 360"
+
+      fill="none"
+      stroke="#4F852F"
+      stroke-width="12"
+      opacity="0.45"/>
+
+    <path
+      d="M-30 465
+         C100 430 205 455 285 430
+         C380 405 450 425 540 410"
+
+      fill="none"
+      stroke="#4F852F"
+      stroke-width="12"
+      opacity="0.4"/>
+
+
+    <!-- Wheat Plants -->
+
+    <g stroke="#6B922E" stroke-width="5" stroke-linecap="round">
+
+      <path d="M45 470 Q52 425 50 385"/>
+      <path d="M78 485 Q84 435 82 398"/>
+      <path d="M112 475 Q119 430 115 390"/>
+
+      <path d="M405 475 Q414 430 410 388"/>
+      <path d="M438 485 Q445 435 442 400"/>
+      <path d="M475 470 Q481 430 478 390"/>
+
+    </g>
+
+
+    <!-- Wheat Heads -->
+
+    <g fill="url(#wheat)">
+
+      <!-- Left Wheat -->
+
+      <ellipse cx="47" cy="386" rx="8" ry="16" transform="rotate(-25 47 386)"/>
+      <ellipse cx="56" cy="400" rx="8" ry="16" transform="rotate(25 56 400)"/>
+      <ellipse cx="46" cy="414" rx="8" ry="16" transform="rotate(-25 46 414)"/>
+      <ellipse cx="57" cy="428" rx="8" ry="16" transform="rotate(25 57 428)"/>
+
+      <ellipse cx="80" cy="399" rx="8" ry="16" transform="rotate(-25 80 399)"/>
+      <ellipse cx="90" cy="413" rx="8" ry="16" transform="rotate(25 90 413)"/>
+      <ellipse cx="79" cy="427" rx="8" ry="16" transform="rotate(-25 79 427)"/>
+
+      <!-- Right Wheat -->
+
+      <ellipse cx="408" cy="389" rx="8" ry="16" transform="rotate(-25 408 389)"/>
+      <ellipse cx="418" cy="403" rx="8" ry="16" transform="rotate(25 418 403)"/>
+      <ellipse cx="408" cy="417" rx="8" ry="16" transform="rotate(-25 408 417)"/>
+      <ellipse cx="418" cy="431" rx="8" ry="16" transform="rotate(25 418 431)"/>
+
+      <ellipse cx="440" cy="401" rx="8" ry="16" transform="rotate(-25 440 401)"/>
+      <ellipse cx="450" cy="415" rx="8" ry="16" transform="rotate(25 450 415)"/>
+      <ellipse cx="440" cy="429" rx="8" ry="16" transform="rotate(-25 440 429)"/>
+
+    </g>
+
+
+    <!-- TUBEWELL -->
+
+    <g filter="url(#shadow)">
+
+      <!-- Vertical Pipe -->
+
+      <rect
+        x="276"
+        y="235"
+        width="22"
+        height="130"
+        rx="8"
+        fill="#555E65"/>
+
+      <!-- Pipe Highlight -->
+
+      <rect
+        x="280"
+        y="240"
+        width="6"
+        height="118"
+        rx="3"
+        fill="#AEB8BD"/>
+
+
+      <!-- Pump Body -->
+
+      <path
+        d="M265 235
+           L308 235
+           L316 250
+           L258 250 Z"
+        fill="#6B7378"/>
+
+      <!-- Pump Handle -->
+
+      <path
+        d="M275 235
+           C248 210 248 188 269 175
+           C291 162 318 174 327 195"
+        fill="none"
+        stroke="#4C555B"
+        stroke-width="14"
+        stroke-linecap="round"/>
+
+      <path
+        d="M274 230
+           C252 208 254 190 271 181"
+        fill="none"
+        stroke="#A7AFB3"
+        stroke-width="5"
+        stroke-linecap="round"/>
+
+
+      <!-- Water Outlet -->
+
+      <path
+        d="M260 255
+           H235
+           C226 255 222 262 222 270
+           V276"
+        fill="none"
+        stroke="#555E65"
+        stroke-width="14"
+        stroke-linecap="round"/>
+
+      <!-- Water Stream -->
+
+      <path
+        d="M222 276
+           C220 292 229 300 224 315
+           C219 330 230 340 225 354"
+        fill="none"
+        stroke="#55C9F2"
+        stroke-width="8"
+        stroke-linecap="round"/>
+
+      <path
+        d="M222 278
+           C220 292 229 300 224 315"
+        fill="none"
+        stroke="#D9F8FF"
+        stroke-width="3"
+        stroke-linecap="round"/>
+
+    </g>
+
+
+    <!-- MAIN WATER DROP -->
+
+    <g filter="url(#shadow)">
+
+      <path
+        d="M345 105
+           C345 105
+           296 166
+           296 202
+           C296 232
+           318 252
+           345 252
+           C372 252
+           394 232
+           394 202
+           C394 166
+           345 105
+           345 105 Z"
+        fill="url(#water)"
+        stroke="white"
+        stroke-width="7"/>
+
+      <!-- Drop Highlight -->
+
+      <path
+        d="M328 164
+           C316 181 310 195 312 207"
+        fill="none"
+        stroke="white"
+        stroke-width="9"
+        stroke-linecap="round"
+        opacity="0.75"/>
+
+      <ellipse
+        cx="327"
+        cy="222"
+        rx="9"
+        ry="5"
+        fill="white"
+        opacity="0.4"/>
+
+    </g>
+
+
+    <!-- Small Water Drops -->
+
+    <path
+      d="M255 330
+         C255 330 246 342 246 349
+         C246 356 250 360 255 360
+         C260 360 264 356 264 349
+         C264 342 255 330 255 330Z"
+      fill="#62D5F5"
+      opacity="0.9"/>
+
+    <path
+      d="M285 350
+         C285 350 278 360 278 366
+         C278 371 281 374 285 374
+         C289 374 292 371 292 366
+         C292 360 285 350 285 350Z"
+      fill="#62D5F5"
+      opacity="0.8"/>
+
+
+    <!-- Foreground Grass -->
+
+    <g
+      fill="none"
+      stroke="#477B2F"
+      stroke-width="5"
+      stroke-linecap="round">
+
+      <path d="M20 510 Q25 475 38 450"/>
+      <path d="M35 510 Q40 480 58 463"/>
+      <path d="M470 510 Q475 475 488 450"/>
+      <path d="M488 510 Q492 480 505 465"/>
+
+    </g>
+
+  </g>
+
+
+  <!-- Subtle Icon Border -->
+
+  <rect
+    x="4"
+    y="4"
+    width="504"
+    height="504"
+    rx="101"
+    fill="none"
+    stroke="white"
+    stroke-opacity="0.18"
+    stroke-width="8"/>
+
 </svg>

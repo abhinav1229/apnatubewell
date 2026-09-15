@@ -316,15 +316,15 @@
                             style="display:none;" data-i18n="stopWater">Stop Water</button>
                         <button id="btn-maintenance" class="btn-secondary" onclick="setMaintenanceMode(true)"
                             data-i18n="maintenanceMode">Maintenance</button>
-                        <button id="btn-power-issue" class="btn-secondary" onclick="setPowerIssueMode(true)"
-                            style="display:none;">Power issue</button>
+                        <button id="btn-power-issue" data-i18n="powerIssue" class="btn-secondary"
+                            onclick="setPowerIssueMode(true)" style="display:none;">Power issue</button>
                         <button id="btn-exit-maintenance" class="btn-primary"
                             style="width:100%; margin-top:8px; background:var(--ios-orange,#ff9500);"
                             onclick="setMaintenanceMode(false)" data-i18n="exitMaintenance">Exit maintenance</button>
 
                         <button id="btn-exit-power" class="btn-primary"
                             style="width:100%; margin-top:8px; background:var(--ios-orange,#ff9500);"
-                            onclick="setPowerIssueMode(false)">Power restored</button>
+                            onclick="setPowerIssueMode(false)" data-i18n="exitPowerIssue">Power restored</button>
                     </div>
                 </div>
             </div>

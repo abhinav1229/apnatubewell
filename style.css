@@ -28,7 +28,8 @@
     /* Typography - San Francisco System */
     /* --font: -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display", "SF Pro", "Inter", sans-serif; */
     --font: 'Google Sans', -apple-system, BlinkMacSystemFont, sans-serif;
-    --font-hindi: "Tiro Devanagari Hindi", "Kohinoor Devanagari", "Noto Sans Devanagari", serif;
+    --font-hindi: "Google Sans", sans-serif;
+    ;
 
     /* iOS Radii */
     --r-sm: 6px;

@@ -1035,9 +1035,6 @@ window.renderCustomers = async function () {
         return '<div class="list-item">' +
             '<div class="item-info" style="flex:1;cursor:pointer;" onclick="openCustomerDetail(\'' + c.id + '\')">' +
             '<h4>' + displayName + badge + '</h4><p>' + (c.phone || '') + '</p></div>' +
-            '<button class="btn-small" style="margin-right:8px;" onclick="removeCustomer(\'' + c.id + '\', event)">' +
-            (currentLang === 'en' ? 'Remove' : 'हटाएं') +
-            '</button>' +
             '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--ios-gray)" stroke-width="2" onclick="openCustomerDetail(\'' + c.id + '\')"><polyline points="9 18 15 12 9 6"></polyline></svg>' +
             '</div>';
     }
@@ -5733,6 +5730,7 @@ window.openCustomerDetail = async function (id) {
         btns.forEach(btn => {
             const t = (btn.innerText || btn.textContent || '').toLowerCase();
             const isAction = t.indexOf('payment') >= 0 || t.indexOf('water') >= 0 || t.indexOf('queue') >= 0 ||
+                t.indexOf('remove') >= 0 || t.indexOf('हटाएं') >= 0 ||
                 t.indexOf('भुगतान') >= 0 || t.indexOf('पानी') >= 0 || t.indexOf('कतार') >= 0;
             if (isAction) {
                 btn.disabled = accountDeleted;
@@ -5856,7 +5854,7 @@ window.openCustomerDetail = async function (id) {
             if (approvalStatus === 'awaiting_approval' || approvalStatus === 'rejected') {
                 editBtn =
                     '<div style="padding:16px 18px 18px;border-top:1px dashed var(--separator);">' +
-                    '<button type="button" style="width:100%;padding:14px;font-size:16px;font-weight:700;border:none;border-radius:12px;background:var(--ios-blue);color:#fff;" onclick="openEditWaterModal(\'' + (entry.id || '') + '\')">' +
+                    '<button type="button" style="width:100%;padding:10px;font-size:16px;font-weight:700;border:none;border-radius:12px;background:var(--ios-blue);color:#fff;" onclick="openEditWaterModal(\'' + (entry.id || '') + '\')">' +
                     (currentLang === 'en' ? '✏️ Edit entry' : '✏️ एडिट करें') + '</button></div>';
             }
 

@@ -1494,6 +1494,30 @@ function waterKey(r) {
 }
 
 
+/** Show single date if ≤24h, otherwise "start → end" */
+function formatWaterDateDisplay(entry) {
+    const startDate = entry.date || entry.start_date || '';
+    let endDate = entry.end_date || '';
+    const duration = parseFloat(entry.duration) || 0;
+
+    // Derive end_date from start + duration if missing but multi-day
+    if (!endDate && startDate && duration > 24) {
+        try {
+            const startMs = new Date(startDate + 'T00:00:00').getTime();
+            const endMs = startMs + (duration * 3600 * 1000);
+            endDate = new Date(endMs).toISOString().split('T')[0];
+        } catch (e) { }
+    }
+
+    const isMultiDay = duration > 24 || (endDate && endDate !== startDate);
+
+    if (isMultiDay && endDate) {
+        return startDate + ' → ' + endDate;
+    }
+    return startDate || '—';
+}
+
+
 
 /** Payments applied to water bills oldest-first. Returns { settled: Set, remainingCredit: number } */
 function getSettledWaterKeys(waterList, paymentsList) {
@@ -1871,7 +1895,7 @@ window.stopWaterSession = async function () {
     const startDateTime = new Date(startDate + 'T' + startTime);
     let endDateTime = new Date(endDate + 'T' + endTime);
 
-    // If end time is earlier in the day than start time, assume same day ended next day (legacy) or use actual dates
+    // Safety: if clocks went backwards on same calendar day
     if (endDateTime < startDateTime && startDate === endDate) {
         endDateTime.setDate(endDateTime.getDate() + 1);
     }
@@ -1906,7 +1930,8 @@ window.stopWaterSession = async function () {
         status: 'pending',
         approval_status: 'awaiting_approval',
         type: 'water',
-        date: today,
+        date: startDate,          // ← bill date = start date
+        end_date: endDate,        // ← always store end date
         created_at: safeServerTimestamp(),
         owner_name: ownerInfo.name || '',
         owner_phone: localStorage.getItem('user_phone') || '',
@@ -1933,6 +1958,7 @@ window.stopWaterSession = async function () {
         currentCustomer: null,
         currentCustomerUid: null,
         currentStartTime: null,
+        currentStartDate: null,       // ← clear this too
         currentSessionRate: null
     });
 
@@ -1941,6 +1967,7 @@ window.stopWaterSession = async function () {
     localTw.status = 'stopped';
     localTw.currentCustomer = null;
     localTw.currentStartTime = null;
+    localTw.currentStartDate = null;
     localTw.currentSessionRate = null;
     saveTubewellData(localTw);
 
@@ -1951,7 +1978,8 @@ window.stopWaterSession = async function () {
         customerId: tw.currentCustomer,
         customerUid,
         customerPhone,
-        date: today,
+        date: startDate,
+        end_date: endDate,
         start: startTime,
         end: endTime,
         duration: parseFloat(duration.toFixed(2)),
@@ -1962,39 +1990,29 @@ window.stopWaterSession = async function () {
     });
     saveWaterHistory(history);
 
+    const entryObj = {
+        id: usageRef.id,
+        type: 'water',
+        date: startDate,
+        end_date: endDate,
+        start: startTime,
+        end: endTime,
+        duration: parseFloat(duration.toFixed(2)),
+        rate,
+        amount,
+        status: 'pending'
+    };
+
     // Also mirror into customer_history for Bahi / detail views
     const custHistory = JSON.parse(localStorage.getItem('customer_history') || '{}');
     if (!custHistory[tw.currentCustomer]) custHistory[tw.currentCustomer] = [];
-    custHistory[tw.currentCustomer].push({
-        id: usageRef.id,
-        type: 'water',
-        date: today,
-        start: startTime,
-        end: endTime,
-        duration: parseFloat(duration.toFixed(2)),
-        rate,
-        amount,
-        status: 'pending'
-    });
+    custHistory[tw.currentCustomer].push(entryObj);
     localStorage.setItem('customer_history', JSON.stringify(custHistory));
+
     if (!customerData[tw.currentCustomer]) {
-        customerData[tw.currentCustomer] = {
-            name: customerName,
-            phone: customerPhone,
-            history: []
-        };
+        customerData[tw.currentCustomer] = { name: customerName, phone: customerPhone, history: [] };
     }
-    customerData[tw.currentCustomer].history.push({
-        id: usageRef.id,
-        type: 'water',
-        date: today,
-        start: startTime,
-        end: endTime,
-        duration: parseFloat(duration.toFixed(2)),
-        rate,
-        amount,
-        status: 'pending'
-    });
+    customerData[tw.currentCustomer].history.push(entryObj);
 
     renderStatusCard();
     renderQueue();
@@ -2759,7 +2777,7 @@ window.openBahiLedger = async function (id) {
                 '</div>' +
                 '<div style="text-align:right;">' +
                 '<div style="font-size:12px;color:var(--ios-gray);">' + (currentLang === 'en' ? 'Date' : 'तारीख') + '</div>' +
-                '<div style="font-size:15px;font-weight:700;">' + (entry.date || '—') + '</div>' +
+                '<div style="font-size:15px;font-weight:700;">' + formatWaterDateDisplay(entry) + '</div>' +
                 '</div></div>' +
                 '<div style="padding:10px 18px;background:' + stampBg + ';border-bottom:1px solid var(--separator);">' +
                 '<span style="font-size:13px;font-weight:800;letter-spacing:0.04em;color:' + stampColor + ';">' + statusText + '</span></div>' +
@@ -2804,7 +2822,7 @@ window.openBahiLedger = async function (id) {
             '</div>' +
             '<div style="text-align:right;">' +
             '<div style="font-size:12px;color:var(--ios-gray);">' + (currentLang === 'en' ? 'Date' : 'तारीख') + '</div>' +
-            '<div style="font-size:15px;font-weight:700;">' + (entry.date || '—') + '</div>' +
+            '<div style="font-size:15px;font-weight:700;">' + formatWaterDateDisplay(entry) + '</div>' +
             '</div></div>' +
             '<div style="padding:10px 18px;background:rgba(52,199,89,0.12);border-bottom:1px solid var(--separator);">' +
             '<span style="font-size:13px;font-weight:800;letter-spacing:0.04em;color:#34C759;">' +
@@ -4204,7 +4222,7 @@ window.renderCustomerUsageDashboard = async function () {
             '</div>' +
             '<div style="text-align:right;">' +
             '<div style="font-size:12px;color:var(--ios-gray);">' + (currentLang === 'en' ? 'Date' : 'तारीख') + '</div>' +
-            '<div style="font-size:15px;font-weight:700;">' + (r.date || '—') + '</div>' +
+            '<div style="font-size:15px;font-weight:700;">' + formatWaterDateDisplay(r) + '</div>' +
             '</div></div>' +
 
             // Status stamp
@@ -4275,7 +4293,7 @@ window.renderCustomerUsageDashboard = async function () {
             '</div>' +
             '<div style="text-align:right;">' +
             '<div style="font-size:12px;color:var(--ios-gray);">' + (currentLang === 'en' ? 'Date' : 'तारीख') + '</div>' +
-            '<div style="font-size:15px;font-weight:700;">' + (r.date || '—') + '</div>' +
+            '<div style="font-size:15px;font-weight:700;">' + formatWaterDateDisplay(entry) + '</div>' +
             '</div></div>' +
             '<div style="padding:10px 18px;background:rgba(52,199,89,0.12);border-bottom:1px solid var(--separator);">' +
             '<span style="font-size:13px;font-weight:800;letter-spacing:0.04em;color:#34C759;">' +
@@ -5518,6 +5536,7 @@ document.getElementById('save-water-btn').addEventListener('click', async () => 
             approval_status: 'awaiting_approval',
             type: 'water',
             date: today,
+            end_date: today,
             created_at: safeServerTimestamp(),
             owner_name: ownerInfo.name || '',
             owner_phone: localStorage.getItem('user_phone') || '',
@@ -5547,7 +5566,7 @@ document.getElementById('save-water-btn').addEventListener('click', async () => 
         history.push({
             id: docRef.id || ('local_' + Date.now()),
             customerId, customerUid: payload.customer_uid, customerPhone: payload.customer_phone,
-            date: today, start: timeStart.value, end: timeEnd.value, duration, rate, amount,
+            date: today, end_date: today, start: timeStart.value, end: timeEnd.value, duration, rate, amount,
             status: 'pending', type: 'water'
         });
 
@@ -5869,7 +5888,7 @@ window.openCustomerDetail = async function (id) {
                 '</div>' +
                 '<div style="text-align:right;">' +
                 '<div style="font-size:12px;color:var(--ios-gray);">' + (currentLang === 'en' ? 'Date' : 'तारीख') + '</div>' +
-                '<div style="font-size:15px;font-weight:700;">' + (entry.date || '—') + '</div>' +
+                '<div style="font-size:15px;font-weight:700;">' + formatWaterDateDisplay(entry) + '</div>' +
                 '</div></div>' +
                 '<div style="padding:10px 18px;background:' + stampBg + ';border-bottom:1px solid var(--separator);">' +
                 '<span style="font-size:13px;font-weight:800;letter-spacing:0.04em;color:' + stampColor + ';">' + statusText + '</span></div>' +
@@ -5914,7 +5933,7 @@ window.openCustomerDetail = async function (id) {
             '</div>' +
             '<div style="text-align:right;">' +
             '<div style="font-size:12px;color:var(--ios-gray);">' + (currentLang === 'en' ? 'Date' : 'तारीख') + '</div>' +
-            '<div style="font-size:15px;font-weight:700;">' + (entry.date || '—') + '</div>' +
+            '<div style="font-size:15px;font-weight:700;">' + formatWaterDateDisplay(entry) + '</div>' +
             '</div></div>' +
             '<div style="padding:10px 18px;background:rgba(52,199,89,0.12);border-bottom:1px solid var(--separator);">' +
             '<span style="font-size:13px;font-weight:800;letter-spacing:0.04em;color:#34C759;">' +
@@ -6010,14 +6029,13 @@ window.openEditWaterModal = async function (entryId) {
                     id: usageDoc.id,
                     type: 'water',
                     date: data.date || '',
+                    end_date: data.end_date || data.date || '',
                     start: data.start_time || '',
                     end: data.end_time || '',
                     duration: data.duration || 0,
                     rate: data.rate || 0,
                     amount: data.amount || 0,
-                    status: data.status || 'pending',
-                    approval_status:
-                        data.approval_status || 'awaiting_approval'
+                    approval_status: data.approval_status || 'awaiting_approval'
                 };
             }
         } catch (error) {
@@ -6051,56 +6069,101 @@ window.openEditWaterModal = async function (entryId) {
     // 6. Fill edit modal
     // -------------------------------------------------
     const idEl = document.getElementById('edit-water-id');
-    const dateEl = document.getElementById('edit-water-date');
-    const startEl = document.getElementById('edit-water-start');
-    const endEl = document.getElementById('edit-water-end');
+    const startDtEl = document.getElementById('edit-water-start-dt');
+    const endDtEl = document.getElementById('edit-water-end-dt');
     const durationEl = document.getElementById('edit-water-duration');
     const rateEl = document.getElementById('edit-water-rate');
     const amountEl = document.getElementById('edit-water-amount');
 
     if (idEl) idEl.value = entryId;
-    if (dateEl) dateEl.value = entry.date || '';
-    if (startEl) startEl.value = entry.start || entry.start_time || '';
-    if (endEl) endEl.value = entry.end || entry.end_time || '';
+
+    // Build datetime-local values: "YYYY-MM-DDTHH:MM"
+    const startDate = entry.date || entry.start_date || '';
+    const endDate = entry.end_date || entry.date || startDate || '';
+    const startTime = (entry.start || entry.start_time || '00:00').slice(0, 5);
+    const endTime = (entry.end || entry.end_time || '00:00').slice(0, 5);
+
+    if (startDtEl) startDtEl.value = startDate && startTime ? `${startDate}T${startTime}` : '';
+    if (endDtEl) endDtEl.value = endDate && endTime ? `${endDate}T${endTime}` : '';
+
     if (durationEl) durationEl.value = entry.duration || '';
     if (rateEl) rateEl.value = entry.rate || '';
+    if (amountEl) amountEl.innerText = '₹' + (entry.amount || 0);
 
-    if (amountEl) {
-        amountEl.innerText = '₹' + (entry.amount || 0);
-    }
-
+    // Recalculate once in case values are partial
+    calculateEditWater();
     openModal('edit-water-modal');
 };
+
 window.calculateEditWater = function () {
-    const duration = parseFloat(document.getElementById('edit-water-duration').value) || 0;
-    const rate = parseFloat(document.getElementById('edit-water-rate').value) || 0;
+    const startVal = document.getElementById('edit-water-start-dt')?.value || '';
+    const endVal = document.getElementById('edit-water-end-dt')?.value || '';
+    const rate = parseFloat(document.getElementById('edit-water-rate')?.value) || 0;
+
+    let duration = 0;
+    if (startVal && endVal) {
+        const startMs = new Date(startVal).getTime();
+        const endMs = new Date(endVal).getTime();
+        if (endMs > startMs) {
+            duration = (endMs - startMs) / (1000 * 60 * 60);
+        }
+    }
+
+    // Store precise number for save
+    const durationEl = document.getElementById('edit-water-duration');
+    if (durationEl) durationEl.value = duration > 0 ? duration.toFixed(2) : '';
+
+    // Show human-readable text
+    const displayEl = document.getElementById('edit-water-duration-display');
+    if (displayEl) {
+        displayEl.innerText = duration > 0 ? formatDuration(duration) : '—';
+    }
+
     const amount = Math.round(duration * rate);
-    document.getElementById('edit-water-amount').innerText = '₹' + amount;
+    const amountEl = document.getElementById('edit-water-amount');
+    if (amountEl) amountEl.innerText = '₹' + amount;
 };
 
 window.saveEditWater = async function () {
     const entryId = document.getElementById('edit-water-id').value;
     if (!entryId) return;
 
-    const date = document.getElementById('edit-water-date').value;
-    const start = document.getElementById('edit-water-start').value;
-    const end = document.getElementById('edit-water-end').value;
-    const duration = parseFloat(document.getElementById('edit-water-duration').value) || 0;
+    const startVal = document.getElementById('edit-water-start-dt').value;
+    const endVal = document.getElementById('edit-water-end-dt').value;
     const rate = parseFloat(document.getElementById('edit-water-rate').value) || 0;
-    const amount = Math.round(duration * rate);
 
-    if (!date || !start || !end || duration <= 0 || rate <= 0) {
+    if (!startVal || !endVal || rate <= 0) {
         showToast(currentLang === 'en' ? 'Please fill all fields correctly' : 'सभी फील्ड सही भरें', 'error');
         return;
     }
 
+    const startMs = new Date(startVal).getTime();
+    const endMs = new Date(endVal).getTime();
+
+    if (isNaN(startMs) || isNaN(endMs) || endMs <= startMs) {
+        showToast(
+            currentLang === 'en' ? 'End must be after start' : 'बंद समय शुरू के बाद होना चाहिए',
+            'error'
+        );
+        return;
+    }
+
+    const duration = (endMs - startMs) / (1000 * 60 * 60);
+    const amount = Math.round(duration * rate);
+
+    // Split datetime → date + time
+    const startDate = startVal.slice(0, 10);           // YYYY-MM-DD
+    const startTime = startVal.slice(11, 16);          // HH:MM
+    const endDate = endVal.slice(0, 10);
+    const endTime = endVal.slice(11, 16);
+
     try {
-        // Update in Firestore
         await safeUpdateDoc(doc(db, 'water_usage', entryId), {
-            date: date,
-            start_time: start,
-            end_time: end,
-            duration: duration,
+            date: startDate,
+            end_date: endDate,
+            start_time: startTime,
+            end_time: endTime,
+            duration: parseFloat(duration.toFixed(2)),
             rate: rate,
             amount: amount,
             approval_status: 'awaiting_approval',
@@ -6108,7 +6171,6 @@ window.saveEditWater = async function () {
             edited_by: localStorage.getItem('user_uid')
         });
 
-        // after successful updateDoc ...
         const cust = getCustomerById(window.currentCustomerId) || {};
         await notifyCustomerWaterApproval({
             customerUid: cust.customerUid || '',
@@ -6117,62 +6179,52 @@ window.saveEditWater = async function () {
             ownerName: (JSON.parse(localStorage.getItem('user_info') || '{}').name || ''),
             usageId: entryId,
             amount,
-            duration,
-            date,
-            start,
-            end,
+            duration: parseFloat(duration.toFixed(2)),
+            date: startDate,
+            start: startTime,
+            end: endTime
         });
 
-        // Update local history
+        // Local history updates
+        const patch = {
+            date: startDate,
+            end_date: endDate,
+            start: startTime,
+            end: endTime,
+            duration: parseFloat(duration.toFixed(2)),
+            rate,
+            amount,
+            approval_status: 'awaiting_approval'
+        };
+
         const history = getWaterHistory();
         const idx = history.findIndex(h => h.id === entryId);
         if (idx >= 0) {
-            history[idx].date = date;
-            history[idx].start = start;
-            history[idx].end = end;
-            history[idx].duration = duration;
-            history[idx].rate = rate;
-            history[idx].amount = amount;
-            history[idx].approval_status = 'awaiting_approval';
+            Object.assign(history[idx], patch);
             saveWaterHistory(history);
         }
 
-        // Update customer history
         const custHistory = JSON.parse(localStorage.getItem('customer_history') || '{}');
         Object.keys(custHistory).forEach(cid => {
             const eidx = custHistory[cid].findIndex(e => e.id === entryId);
-            if (eidx >= 0) {
-                custHistory[cid][eidx].date = date;
-                custHistory[cid][eidx].start = start;
-                custHistory[cid][eidx].end = end;
-                custHistory[cid][eidx].duration = duration;
-                custHistory[cid][eidx].rate = rate;
-                custHistory[cid][eidx].amount = amount;
-                custHistory[cid][eidx].approval_status = 'awaiting_approval';
-            }
+            if (eidx >= 0) Object.assign(custHistory[cid][eidx], patch);
         });
         localStorage.setItem('customer_history', JSON.stringify(custHistory));
 
         if (customerData[window.currentCustomerId]) {
             const ch = customerData[window.currentCustomerId].history || [];
             const eidx = ch.findIndex(e => e.id === entryId);
-            if (eidx >= 0) {
-                ch[eidx].date = date;
-                ch[eidx].start = start;
-                ch[eidx].end = end;
-                ch[eidx].duration = duration;
-                ch[eidx].rate = rate;
-                ch[eidx].amount = amount;
-                ch[eidx].approval_status = 'awaiting_approval';
-            }
+            if (eidx >= 0) Object.assign(ch[eidx], patch);
         }
 
         closeModal('edit-water-modal');
         openCustomerDetail(window.currentCustomerId);
         updateDashboardStats();
         renderPendingPayments();
-        showToast(currentLang === 'en' ? 'Updated and sent for approval' : 'अपडेट करके स्वीकृति के लिए भेजा गया', 'success');
-
+        showToast(
+            currentLang === 'en' ? 'Updated and sent for approval' : 'अपडेट करके स्वीकृति के लिए भेजा गया',
+            'success'
+        );
     } catch (e) {
         console.error('saveEditWater failed', e);
         showToast(currentLang === 'en' ? 'Update failed' : 'अपडेट विफल', 'error');

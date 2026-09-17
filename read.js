@@ -1405,6 +1405,65 @@ function formatDuration(hours) {
     return hrs + (hrs === 1 ? ' hr ' : ' hrs ') + mins + ' min';
 }
 
+/** "2026-09-15" → "15th Sep 2026" (EN) or "15 सित 2026" (HI) */
+function formatDateDisplay(dateStr) {
+    if (!dateStr) return '—';
+
+    // Normalize to YYYY-MM-DD string
+    let s = '';
+    if (typeof dateStr === 'string') {
+        s = dateStr.trim().slice(0, 10);
+    } else if (dateStr && typeof dateStr.toDate === 'function') {
+        // Firestore Timestamp
+        s = localDateStr(dateStr.toDate());
+    } else if (dateStr instanceof Date) {
+        s = localDateStr(dateStr);
+    } else {
+        s = String(dateStr).slice(0, 10);
+    }
+
+    // Expect YYYY-MM-DD
+    const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s);
+    if (!m) return s; // unknown format — show as-is
+
+    const year = parseInt(m[1], 10);
+    const monthIndex = parseInt(m[2], 10) - 1;
+    const day = parseInt(m[3], 10);
+
+    const monthsEn = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+        'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+    const monthsHi = ['जन', 'फर', 'मार्च', 'अप्रै', 'मई', 'जून',
+        'जुल', 'अग', 'सित', 'अक्टू', 'नव', 'दिस'];
+
+    const month = currentLang === 'hi' ? monthsHi[monthIndex] : monthsEn[monthIndex];
+
+    let dayStr = String(day);
+    if (currentLang !== 'hi') {
+        const j = day % 10, k = day % 100;
+        if (j === 1 && k !== 11) dayStr = day + 'st';
+        else if (j === 2 && k !== 12) dayStr = day + 'nd';
+        else if (j === 3 && k !== 13) dayStr = day + 'rd';
+        else dayStr = day + 'th';
+    }
+
+    return dayStr + ' ' + month + ' ' + year;
+}
+
+/** Local calendar date as YYYY-MM-DD (never UTC) */
+function localDateStr(d = new Date()) {
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    return y + '-' + m + '-' + day;
+}
+
+/** Local time as HH:MM */
+function localTimeStr(d = new Date()) {
+    const h = String(d.getHours()).padStart(2, '0');
+    const min = String(d.getMinutes()).padStart(2, '0');
+    return h + ':' + min;
+}
+
 
 function loadCustomerData() {
     const customers = getCustomers();
@@ -1494,29 +1553,27 @@ function waterKey(r) {
 }
 
 
-/** Show single date if ≤24h, otherwise "start → end" */
 function formatWaterDateDisplay(entry) {
     const startDate = entry.date || entry.start_date || '';
     let endDate = entry.end_date || '';
     const duration = parseFloat(entry.duration) || 0;
 
-    // Derive end_date from start + duration if missing but multi-day
+    // Derive end_date only if missing and multi-day — LOCAL, not UTC
     if (!endDate && startDate && duration > 24) {
         try {
-            const startMs = new Date(startDate + 'T00:00:00').getTime();
-            const endMs = startMs + (duration * 3600 * 1000);
-            endDate = new Date(endMs).toISOString().split('T')[0];
+            const parts = startDate.split('-').map(Number);
+            const d = new Date(parts[0], parts[1] - 1, parts[2], 0, 0, 0);
+            d.setTime(d.getTime() + duration * 3600 * 1000);
+            endDate = localDateStr(d);
         } catch (e) { }
     }
 
     const isMultiDay = duration > 24 || (endDate && endDate !== startDate);
-
     if (isMultiDay && endDate) {
-        return startDate + ' → ' + endDate;
+        return formatDateDisplay(startDate) + ' → ' + formatDateDisplay(endDate);
     }
-    return startDate || '—';
+    return formatDateDisplay(startDate);
 }
-
 
 
 /** Payments applied to water bills oldest-first. Returns { settled: Set, remainingCredit: number } */
@@ -1838,7 +1895,7 @@ window.startWaterSession = async function () {
                 currentCustomer: customerId,
                 currentCustomerUid: getCustomerById(customerId)?.customerUid || await resolveCustomerUid(getCustomerById(customerId)?.phone) || customerId,
                 currentStartTime: startTime,
-                currentStartDate: new Date().toISOString().split('T')[0],
+                currentStartDate: localDateStr(),
                 currentSessionRate: sessionRate
             });
         });
@@ -1854,7 +1911,7 @@ window.startWaterSession = async function () {
         localTw.status = 'running';
         localTw.currentCustomer = customerId;
         localTw.currentStartTime = new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false });
-        localTw.currentStartDate = new Date().toISOString().split('T')[0];
+        localTw.currentStartDate = localDateStr();
         localTw.currentSessionRate = sessionRate;
         saveTubewellData(localTw);
 
@@ -1887,10 +1944,10 @@ window.stopWaterSession = async function () {
     if (tw.status !== 'running' || !tw.currentCustomer) return;
 
     const startTime = tw.currentStartTime;
-    const startDate = tw.currentStartDate || new Date().toISOString().split('T')[0];
-    const endTime = new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false });
-    const endDate = new Date().toISOString().split('T')[0];
-    const today = new Date().toISOString().split('T')[0];
+    const startDate = tw.currentStartDate || localDateStr();
+    const endTime = localTimeStr();
+    const endDate = localDateStr();
+    const today = localDateStr();
 
     const startDateTime = new Date(startDate + 'T' + startTime);
     let endDateTime = new Date(endDate + 'T' + endTime);
@@ -2647,7 +2704,7 @@ window.openBahiLedger = async function (id) {
                 });
             } else {
                 history.push({
-                    id: d.id, type: 'water', date: r.date || '',
+                    id: d.id, type: 'water', date: r.date || '', end_date: r.end_date || r.date || '',
                     start: r.start_time || r.start || '', end: r.end_time || r.end || '',
                     duration: r.duration, rate: r.rate, amount: r.amount,
                     status: r.status || 'pending',
@@ -2884,7 +2941,7 @@ window.setDashboardPeriod = function (period) {
     if (dashboardPeriod === 'custom') {
         const from = document.getElementById('dash-from-date');
         const to = document.getElementById('dash-to-date');
-        const today = new Date().toISOString().split('T')[0];
+        const today = localDateStr();
         if (from && !from.value) from.value = today;
         if (to && !to.value) to.value = today;
         if (from) from.onchange = updateDashboardStats;
@@ -2897,7 +2954,7 @@ window.setDashboardPeriod = function (period) {
 window.updateDashboardStats = function () {
     const history = getWaterHistory();
     const now = new Date();
-    const today = now.toISOString().split('T')[0];
+    const today = localDateStr(now);
     let hours = 0, revenue = 0, received = 0, pending = 0;
 
     const inRange = (dateStr) => {
@@ -2980,7 +3037,7 @@ window.saveDailyNote = async function () {
         ownerUid: ownerUid,
         message: note,
         updatedAt: safeServerTimestamp(),
-        date: new Date().toISOString().split('T')[0]
+        date: localDateStr()
     };
 
     try {
@@ -3030,7 +3087,7 @@ window.clearAnnouncement = async function () {
             const input = document.getElementById('daily-note-input');
             if (input) input.value = '';
 
-            const today = new Date().toISOString().split('T')[0];
+            const today = localDateStr();
             const notes = JSON.parse(localStorage.getItem('daily_notes') || '{}');
             delete notes[today];
             localStorage.setItem('daily_notes', JSON.stringify(notes));
@@ -3049,7 +3106,7 @@ async function loadDailyNote() {
     if (!input) return;
 
     const ownerUid = localStorage.getItem('user_uid');
-    const today = new Date().toISOString().split('T')[0];
+    const today = localDateStr();
 
     // Prefer server
     if (ownerUid) {
@@ -3970,6 +4027,7 @@ window.startOwnerListeners = function () {
                     history[idx].amount = data.amount;
                     history[idx].duration = data.duration;
                     history[idx].date = data.date;
+                    history[idx].end_date = data.end_date || data.date || '';
                     history[idx].start = data.start_time;
                     history[idx].end = data.end_time;
                     history[idx].rate = data.rate;
@@ -3983,6 +4041,7 @@ window.startOwnerListeners = function () {
                         custHistory[cid][eidx].amount = data.amount;
                         custHistory[cid][eidx].duration = data.duration;
                         custHistory[cid][eidx].date = data.date;
+                        custHistory[cid][eidx].end_date = data.end_date || data.date || '';
                         custHistory[cid][eidx].start = data.start_time;
                         custHistory[cid][eidx].end = data.end_time;
                         custHistory[cid][eidx].rate = data.rate;
@@ -3997,6 +4056,7 @@ window.startOwnerListeners = function () {
                         ch[eidx].amount = data.amount;
                         ch[eidx].duration = data.duration;
                         ch[eidx].date = data.date;
+                        ch[eidx].end_date = data.end_date || data.date || '';
                         ch[eidx].start = data.start_time;
                         ch[eidx].end = data.end_time;
                         ch[eidx].rate = data.rate;
@@ -4293,7 +4353,7 @@ window.renderCustomerUsageDashboard = async function () {
             '</div>' +
             '<div style="text-align:right;">' +
             '<div style="font-size:12px;color:var(--ios-gray);">' + (currentLang === 'en' ? 'Date' : 'तारीख') + '</div>' +
-            '<div style="font-size:15px;font-weight:700;">' + formatWaterDateDisplay(entry) + '</div>' +
+            '<div style="font-size:15px;font-weight:700;">' + formatDateDisplay(r.date) + '</div>' +
             '</div></div>' +
             '<div style="padding:10px 18px;background:rgba(52,199,89,0.12);border-bottom:1px solid var(--separator);">' +
             '<span style="font-size:13px;font-weight:800;letter-spacing:0.04em;color:#34C759;">' +
@@ -4487,6 +4547,7 @@ window.syncOwnerUsageFromServer = async function () {
                     customerUid: r.customer_uid,
                     customerPhone: r.customer_phone,
                     date: r.date,
+                    end_date: r.end_date || r.date || '',
                     start: r.start_time,
                     end: r.end_time,
                     duration: r.duration,
@@ -4510,6 +4571,7 @@ window.syncOwnerUsageFromServer = async function () {
                     id: d.id,
                     type: 'water',
                     date: r.date,
+                    end_date: r.end_date || r.date || '',
                     start: r.start_time,
                     end: r.end_time,
                     duration: r.duration,
@@ -5482,7 +5544,7 @@ function calculateWaterUsage() {
     const start = timeStart.value;
     const end = timeEnd.value;
     if (!start || !end) return;
-    const today = new Date().toISOString().split('T')[0];
+    const today = localDateStr();
     const startDate = new Date(`${today}T${start}`);
     let endDate = new Date(`${today}T${end}`);
     if (endDate < startDate) endDate.setDate(endDate.getDate() + 1);
@@ -5515,7 +5577,7 @@ document.getElementById('save-water-btn').addEventListener('click', async () => 
         }
 
         const duration = parseFloat(calcDuration.innerText);
-        const today = new Date().toISOString().split('T')[0];
+        const today = localDateStr();
         const ownerUid = localStorage.getItem('user_uid');
         const cust = getCustomerById(customerId) || {};
         const rate = getRate();
@@ -5967,32 +6029,35 @@ window.openEditWaterModal = async function (entryId) {
 
     let entry = null;
 
-    // -------------------------------------------------
-    // 1. First check owner's local water history
-    // -------------------------------------------------
-    const waterHistory = getWaterHistory();
-
-    entry = waterHistory.find(
-        h => String(h.id) === String(entryId)
-    );
-
-    // -------------------------------------------------
-    // 2. If not found, check current customer's history
-    // -------------------------------------------------
-    if (!entry && window.currentCustomerId) {
-        const cust = customerData[window.currentCustomerId];
-
-        if (cust && Array.isArray(cust.history)) {
-            entry = cust.history.find(
-                h => String(h.id) === String(entryId)
-            );
+    // 1) Firestore = source of truth
+    try {
+        const usageDoc = await getDoc(doc(db, 'water_usage', entryId));
+        if (usageDoc.exists()) {
+            const data = usageDoc.data();
+            entry = {
+                id: usageDoc.id,
+                type: 'water',
+                date: data.date || '',
+                end_date: data.end_date || data.date || '',
+                start: data.start_time || data.start || '',
+                end: data.end_time || data.end || '',
+                duration: data.duration || 0,
+                rate: data.rate || 0,
+                amount: data.amount || 0,
+                approval_status: data.approval_status || 'awaiting_approval'
+            };
         }
+    } catch (e) {
+        console.error('openEditWaterModal Firestore', e);
     }
 
     // -------------------------------------------------
     // 3. If still not found, check customer_history
     // -------------------------------------------------
+    // 2) Local fallback only if Firestore failed
     if (!entry) {
+        entry = getWaterHistory().find(h => String(h.id) === String(entryId)) || null;
+
         const customerHistory = JSON.parse(
             localStorage.getItem('customer_history') || '{}'
         );
@@ -6068,29 +6133,21 @@ window.openEditWaterModal = async function (entryId) {
     // -------------------------------------------------
     // 6. Fill edit modal
     // -------------------------------------------------
-    const idEl = document.getElementById('edit-water-id');
-    const startDtEl = document.getElementById('edit-water-start-dt');
-    const endDtEl = document.getElementById('edit-water-end-dt');
-    const durationEl = document.getElementById('edit-water-duration');
-    const rateEl = document.getElementById('edit-water-rate');
+    const startDate = entry.date || '';
+    const endDate = entry.end_date || entry.date || startDate;
+    const startTime = String(entry.start || entry.start_time || '00:00').slice(0, 5);
+    const endTime = String(entry.end || entry.end_time || '00:00').slice(0, 5);
+
+    document.getElementById('edit-water-id').value = entryId;
+    document.getElementById('edit-water-start-dt').value =
+        startDate && startTime ? (startDate + 'T' + startTime) : '';
+    document.getElementById('edit-water-end-dt').value =
+        endDate && endTime ? (endDate + 'T' + endTime) : '';
+    document.getElementById('edit-water-duration').value = entry.duration || '';
+    document.getElementById('edit-water-rate').value = entry.rate || '';
     const amountEl = document.getElementById('edit-water-amount');
-
-    if (idEl) idEl.value = entryId;
-
-    // Build datetime-local values: "YYYY-MM-DDTHH:MM"
-    const startDate = entry.date || entry.start_date || '';
-    const endDate = entry.end_date || entry.date || startDate || '';
-    const startTime = (entry.start || entry.start_time || '00:00').slice(0, 5);
-    const endTime = (entry.end || entry.end_time || '00:00').slice(0, 5);
-
-    if (startDtEl) startDtEl.value = startDate && startTime ? `${startDate}T${startTime}` : '';
-    if (endDtEl) endDtEl.value = endDate && endTime ? `${endDate}T${endTime}` : '';
-
-    if (durationEl) durationEl.value = entry.duration || '';
-    if (rateEl) rateEl.value = entry.rate || '';
     if (amountEl) amountEl.innerText = '₹' + (entry.amount || 0);
 
-    // Recalculate once in case values are partial
     calculateEditWater();
     openModal('edit-water-modal');
 };
@@ -6151,9 +6208,8 @@ window.saveEditWater = async function () {
     const duration = (endMs - startMs) / (1000 * 60 * 60);
     const amount = Math.round(duration * rate);
 
-    // Split datetime → date + time
-    const startDate = startVal.slice(0, 10);           // YYYY-MM-DD
-    const startTime = startVal.slice(11, 16);          // HH:MM
+    const startDate = startVal.slice(0, 10);
+    const startTime = startVal.slice(11, 16);
     const endDate = endVal.slice(0, 10);
     const endTime = endVal.slice(11, 16);
 
@@ -6308,7 +6364,7 @@ window.savePayment = async function () {
 };
 
 // Set default payment date
-document.getElementById('payment-date').value = new Date().toISOString().split('T')[0];
+document.getElementById('payment-date').value = localDateStr();
 window.toggleCustomSelect = function () {
     document.getElementById('water-customer-wrapper').classList.toggle('active');
 }
@@ -6977,7 +7033,7 @@ populateCustomerDropdowns();
 // Set max DOB to today
 (function () {
     const dob = document.getElementById('login-dob');
-    if (dob) dob.max = new Date().toISOString().split('T')[0];
+    if (dob) dob.max = localDateStr();
 })();
 
 

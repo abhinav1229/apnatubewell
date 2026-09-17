@@ -5576,7 +5576,11 @@ window.openHelpModal = function () {
 };
 
 window.openModal = function (id) {
-    document.getElementById(id).classList.add('active');
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.classList.add('active');
+    history.pushState({ modal: id }, '');
+
     if (id === 'start-water-modal') {
         populateCustomerDropdowns();
         const rateEl = document.getElementById('start-water-rate');
@@ -5593,6 +5597,104 @@ window.openModal = function (id) {
 
 window.closeModal = function (id) {
     document.getElementById(id).classList.remove('active');
+}
+
+
+/* --- DEVICE / BROWSER BACK --- */
+function getActiveModals() {
+    return Array.from(document.querySelectorAll('.modal-overlay.active'));
+}
+
+function closeTopOverlay() {
+    const modals = getActiveModals();
+    if (!modals.length) return false;
+
+    // Last in DOM ≈ topmost
+    const top = modals[modals.length - 1];
+
+    if (top.id === 'confirm-popup-overlay') {
+        top.classList.remove('active');
+        top.style.display = 'none';
+        return true;
+    }
+
+    top.classList.remove('active');
+    return true;
+}
+
+function getActiveMainViewId() {
+    const el = document.querySelector('.main-view.active');
+    return el ? el.id : null;
+}
+
+function activateHomeNav() {
+    document.querySelectorAll('.bottom-nav .nav-item').forEach(nav => {
+        nav.classList.toggle('active', nav.getAttribute('data-target') === 'view-home');
+    });
+}
+
+function handleAppBack() {
+    // 1) Modal / confirm
+    if (closeTopOverlay()) {
+        history.pushState({ app: 1 }, '');
+        return;
+    }
+
+    const viewId = getActiveMainViewId();
+
+    // 2) Nested screens → parent
+    if (viewId === 'view-customer-detail') {
+        showView('view-customers');
+        document.querySelectorAll('.bottom-nav .nav-item').forEach(nav => {
+            nav.classList.toggle('active', nav.getAttribute('data-target') === 'view-customers');
+        });
+        history.pushState({ app: 1 }, '');
+        return;
+    }
+    if (viewId === 'view-bahi-ledger') {
+        showView('view-bahi');
+        document.querySelectorAll('.bottom-nav .nav-item').forEach(nav => {
+            nav.classList.toggle('active', nav.getAttribute('data-target') === 'view-bahi');
+        });
+        history.pushState({ app: 1 }, '');
+        return;
+    }
+    if (viewId === 'view-customer-usage-history') {
+        showView('view-customer-usage');
+        document.querySelectorAll('.bottom-nav .nav-item').forEach(nav => {
+            nav.classList.toggle('active', nav.getAttribute('data-target') === 'view-customer-usage');
+        });
+        history.pushState({ app: 1 }, '');
+        return;
+    }
+
+    // 3) Any other main tab → Home
+    if (viewId && viewId !== 'view-home') {
+        showView('view-home');
+        activateHomeNav();
+        history.pushState({ app: 1 }, '');
+        return;
+    }
+
+    // 4) Already on Home → leave site (default browser)
+    // Do not pushState again — allow real back navigation
+    if (window.history.length > 1) {
+        history.back();
+    }
+}
+
+function initBackButton() {
+    // One trap state so first Back is handled by us
+    if (!window._appBackReady) {
+        history.pushState({ app: 1 }, '');
+        window._appBackReady = true;
+    }
+
+    window.removeEventListener('popstate', window._onAppPopState);
+    window._onAppPopState = function () {
+        handleAppBack();
+    };
+    window.addEventListener('popstate', window._onAppPopState);
 }
 
 /* --- WATER CALCULATION --- */
@@ -6594,6 +6696,8 @@ function setupOwnerUI() {
     startOwnerListeners();
     renderLinkRequests();
     renderBahiCustomers();
+
+    if (typeof initBackButton === 'function') initBackButton();
 }
 
 function setupCustomerUI() {
@@ -6723,6 +6827,8 @@ function setupCustomerUI() {
     }
     startCustomerListeners();
     updateBecomeOwnerButton();
+
+    if (typeof initBackButton === 'function') initBackButton();
 }
 
 

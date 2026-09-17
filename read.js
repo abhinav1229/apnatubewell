@@ -1745,10 +1745,8 @@ window.renderStatusCard = async function () {
 
 window.renderQueue = async function () {
     const queue = getQueue();
-    const container = document.getElementById('queue-list-container');
-    if (!container) return;
 
-    // Update queue count badge on status card
+    // Badge (optional)
     const countEl = document.getElementById('queue-count-badge');
     if (countEl) {
         countEl.innerText = queue.length > 0
@@ -1757,34 +1755,46 @@ window.renderQueue = async function () {
         countEl.style.display = queue.length > 0 ? 'inline-block' : 'none';
     }
 
-    if (queue.length === 0) {
-        container.innerHTML = '<div class="list-item empty-state"><div class="item-info"><p data-i18n="noQueue">' + locales[currentLang].noQueue + '</p></div></div>';
-    } else {
-        // Resolve fresh names from server
-        const rows = await Promise.all(queue.map(async (entry, idx) => {
-            const cust = getCustomerById(entry.customerId);
-            let name = cust ? cust.name : 'Unknown';
-            const phone = cust ? cust.phone : '';
+    // Full list only if container exists (you hid it for now)
+    const container = document.getElementById('queue-list-container');
+    if (container) {
+        if (queue.length === 0) {
+            container.innerHTML = '<div class="list-item empty-state"><div class="item-info"><p data-i18n="noQueue">' +
+                locales[currentLang].noQueue + '</p></div></div>';
+        } else {
+            const rows = await Promise.all(queue.map(async (entry, idx) => {
+                const cust = getCustomerById(entry.customerId);
+                let name = cust ? cust.name : 'Unknown';
+                const phone = cust ? cust.phone : '';
+                if (cust && cust.customerUid) {
+                    try {
+                        const uDoc = await getDoc(doc(db, 'users', cust.customerUid));
+                        if (uDoc.exists() && uDoc.data().accountStatus !== 'deleted') {
+                            name = uDoc.data().name || name;
+                        }
+                    } catch (e) { }
+                }
+                return { entry, idx, name, phone };
+            }));
 
-            // Fresh name from server
-            if (cust && cust.customerUid) {
-                try {
-                    const uDoc = await getDoc(doc(db, 'users', cust.customerUid));
-                    if (uDoc.exists() && uDoc.data().accountStatus !== 'deleted') {
-                        name = uDoc.data().name || name;
-                    }
-                } catch (e) { }
-            }
-
-            return { entry, idx, name, phone };
-        }));
-
-        container.innerHTML = rows.map(({ entry, idx, name, phone }) => {
-            return '<div class="list-item"><div style="display:flex; align-items:center; gap:12px;"><span class="queue-num">' + (idx + 1) + '</span><div class="item-info"><h4>' + name + '</h4><p>' + phone + (idx === 0 ? ' · <span style="color:var(--ios-green);">' + (currentLang === 'en' ? 'Next' : 'अगला') + '</span>' : '') + '</p></div></div><button class="btn-small" onclick="removeFromQueue(\'' + entry.customerId + '\')">' + locales[currentLang].removeFromQueue + '</button></div>';
-        }).join('');
+            container.innerHTML = rows.map(({ entry, idx, name, phone }) => {
+                return '<div class="list-item"><div style="display:flex; align-items:center; gap:12px;">' +
+                    '<span class="queue-num">' + (idx + 1) + '</span>' +
+                    '<div class="item-info"><h4>' + name + '</h4><p>' + phone +
+                    (idx === 0 ? ' · <span style="color:var(--ios-green);">' +
+                        (currentLang === 'en' ? 'Next' : 'अगला') + '</span>' : '') +
+                    '</p></div></div>' +
+                    '<button class="btn-small" onclick="removeFromQueue(\'' + entry.customerId + '\')">' +
+                    locales[currentLang].removeFromQueue + '</button></div>';
+            }).join('');
+        }
     }
-    renderNextInQueue();
-}
+
+    // ALWAYS update next-in-queue (even if full list is hidden)
+    await renderNextInQueue();
+
+    updateSeeAllQueueButton();
+};
 
 window.renderNextInQueue = async function () {
     const el = document.getElementById('next-in-queue-section');
@@ -1809,7 +1819,25 @@ window.renderNextInQueue = async function () {
         } catch (e) { }
     }
 
-    el.innerHTML = '<div class="list-item" style="background:rgba(0,122,255,0.06);"><div style="display:flex; align-items:center; gap:12px; width:100%;"><span class="queue-num">1</span><div class="item-info"><h4>' + name + '</h4><p>' + phone + ' · ' + (currentLang === 'en' ? 'Next in queue' : 'कतार में अगला') + '</p></div></div></div>';
+    const more = queue.length > 1
+        ? ('' + (queue.length - 1) + (currentLang === 'en' ? ' more waiting' : ' और इंतज़ार में'))
+        : '';
+
+    el.innerHTML =
+        '<div class="list-item" style="background:rgba(0,122,255,0.06);">' +
+        '<div style="display:flex; align-items:center; gap:12px; width:100%;">' +
+        '<span class="queue-num">1</span>' +
+        '<div class="item-info" style="flex:1;">' +
+        '<h4>' + name + '</h4>' +
+        '<p>' + phone + ' · ' + (currentLang === 'en' ? 'Next in queue' : 'कतार में अगला') + '</p>' + '<p>' + more + '</p>' +
+        '</div>' +
+        '<button type="button" class="btn-small" style="background:rgba(255,59,48,0.12);color:var(--ios-red);"' +
+        ' onclick="removeFromQueue(\'' + entry.customerId + '\')">' +
+        (currentLang === 'en' ? 'Remove' : 'हटाएं') +
+        '</button>' +
+        '</div></div>';
+
+    updateSeeAllQueueButton();
 }
 
 window.addCustomerToQueue = async function (customerId) {
@@ -1827,14 +1855,30 @@ window.addCustomerToQueue = async function (customerId) {
         showToast(currentLang === 'en' ? 'Already in queue' : 'पहले से कतार में है', 'info');
         return;
     }
-    await safeAddDoc(queueRef, { ownerId: ownerUid, customerId, addedAt: safeServerTimestamp() });
-    // Update local queue
+
+    await safeAddDoc(queueRef, {
+        ownerId: ownerUid,
+        customerId,
+        addedAt: safeServerTimestamp()
+    });
+
     const localQ = getQueue();
     if (!localQ.find(e => e.customerId === customerId)) {
-        localQ.push({ customerId, addedAt: new Date().toISOString() });
+        localQ.push({
+            customerId,
+            addedAt: new Date().toISOString(),
+            addedAtMs: Date.now()
+        });
         saveQueue(localQ);
     }
-    renderQueue();
+
+    await renderQueue();          // updates Next on Home
+    if (document.getElementById('full-queue-modal')?.classList.contains('active')) {
+        await renderFullQueueList();  // refresh modal if open
+    }
+
+    updateSeeAllQueueButton();
+
     showToast(currentLang === 'en' ? 'Added to queue' : 'कतार में जोड़ दिया गया', 'success');
 };
 
@@ -1846,7 +1890,11 @@ window.removeFromQueue = async function (customerId) {
     snapshot.forEach(async (d) => { await safeDeleteDoc(doc(db, 'queues', d.id)); });
     const localQ = getQueue().filter(e => e.customerId !== customerId);
     saveQueue(localQ);
-    renderQueue();
+    await renderQueue();          // updates Next on Home
+    if (document.getElementById('full-queue-modal')?.classList.contains('active')) {
+        await renderFullQueueList();  // refresh modal if open
+    }
+    updateSeeAllQueueButton();
     showToast(currentLang === 'en' ? 'Removed from queue' : 'कतार से हटा दिया गया', 'success');
 };
 
@@ -3046,6 +3094,7 @@ window.saveDailyNote = async function () {
         const notes = JSON.parse(localStorage.getItem('daily_notes') || '{}');
         notes[today] = note;
         localStorage.setItem('daily_notes', JSON.stringify(notes));
+        updateRemoveAnnouncementButton(true);
 
         showToast(
             currentLang === 'en' ? 'Announcement sent to customers' : 'ग्राहकों को घोषणा भेज दी गई',
@@ -3091,6 +3140,7 @@ window.clearAnnouncement = async function () {
             const notes = JSON.parse(localStorage.getItem('daily_notes') || '{}');
             delete notes[today];
             localStorage.setItem('daily_notes', JSON.stringify(notes));
+            updateRemoveAnnouncementButton(false);
 
             showToast(
                 currentLang === 'en' ? 'Announcement removed' : 'घोषणा हटा दी गई',
@@ -3108,12 +3158,13 @@ async function loadDailyNote() {
     const ownerUid = localStorage.getItem('user_uid');
     const today = localDateStr();
 
-    // Prefer server
     if (ownerUid) {
         try {
             const snap = await getDoc(doc(db, 'announcements', ownerUid));
             if (snap.exists()) {
-                input.value = snap.data().message || '';
+                const msg = (snap.data().message || '').trim();
+                input.value = msg;
+                updateRemoveAnnouncementButton(!!msg);
                 return;
             }
         } catch (e) {
@@ -3122,7 +3173,9 @@ async function loadDailyNote() {
     }
 
     const notes = JSON.parse(localStorage.getItem('daily_notes') || '{}');
-    input.value = notes[today] || '';
+    const msg = (notes[today] || '').trim();
+    input.value = msg;
+    updateRemoveAnnouncementButton(!!msg);
 }
 
 window.renderPendingPayments = function () {
@@ -3985,8 +4038,21 @@ window.startOwnerListeners = function () {
     const q = query(queueRef, where('ownerId', '==', ownerUid));
     unsubQueue = onSnapshot(q, (snapshot) => {
         const queue = [];
-        snapshot.forEach(d => queue.push(d.data()));
-        queue.sort((a, b) => a.addedAt?.toMillis?.() - b.addedAt?.toMillis?.() || 0);
+        snapshot.forEach(d => {
+            const data = d.data();
+            queue.push({
+                ...data,
+                customerId: data.customerId,
+                // normalize addedAt to ms for sort + localStorage
+                addedAtMs: data.addedAt && typeof data.addedAt.toMillis === 'function'
+                    ? data.addedAt.toMillis()
+                    : (typeof data.addedAt === 'string' ? Date.parse(data.addedAt) : (data.addedAtMs || 0)),
+                addedAt: data.addedAt && typeof data.addedAt.toMillis === 'function'
+                    ? new Date(data.addedAt.toMillis()).toISOString()
+                    : (data.addedAt || new Date().toISOString())
+            });
+        });
+        queue.sort((a, b) => (a.addedAtMs || 0) - (b.addedAtMs || 0));
         saveQueue(queue);
         renderQueue();
     });
@@ -6957,6 +7023,106 @@ window.openCustomerUsageHistory = function () {
     window.scrollTo({ top: 0, behavior: 'smooth' });
 };
 
+window.openAddToQueueModal = function () {
+    // Reuse same customer list as start-water
+    const customers = getCustomers().filter(c =>
+        c.status !== 'removed' && c.accountDeleted !== true
+    );
+    const sel = document.getElementById('add-queue-customer');
+    if (!sel) return;
+
+    sel.innerHTML =
+        '<option value="">-- ' +
+        (currentLang === 'en' ? 'Select customer' : 'ग्राहक चुनें') +
+        ' --</option>' +
+        customers.map(c =>
+            '<option value="' + c.id + '">' + (c.name || c.phone || c.id) + '</option>'
+        ).join('');
+
+    openModal('add-to-queue-modal');
+};
+
+window.confirmAddToQueueFromHome = async function () {
+    const customerId = (document.getElementById('add-queue-customer') || {}).value;
+    if (!customerId) {
+        showToast(
+            currentLang === 'en' ? 'Select a customer' : 'ग्राहक चुनें',
+            'error'
+        );
+        return;
+    }
+    await addCustomerToQueue(customerId);
+    closeModal('add-to-queue-modal');
+};
+
+window.openFullQueueModal = async function () {
+    await renderFullQueueList();
+    openModal('full-queue-modal');
+};
+
+window.renderFullQueueList = async function () {
+    const container = document.getElementById('full-queue-list');
+    if (!container) return;
+
+    const queue = getQueue();
+    if (queue.length === 0) {
+        container.innerHTML =
+            '<div style="padding:24px;text-align:center;color:var(--ios-gray);font-size:15px;">' +
+            (currentLang === 'en' ? 'No customers in queue' : 'कतार में कोई नहीं') +
+            '</div>';
+        return;
+    }
+
+    const rows = await Promise.all(queue.map(async (entry, idx) => {
+        const cust = getCustomerById(entry.customerId);
+        let name = cust ? cust.name : 'Unknown';
+        const phone = cust ? cust.phone : '';
+        if (cust && cust.customerUid) {
+            try {
+                const uDoc = await getDoc(doc(db, 'users', cust.customerUid));
+                if (uDoc.exists() && uDoc.data().accountStatus !== 'deleted') {
+                    name = uDoc.data().name || name;
+                }
+            } catch (e) { }
+        }
+        return { entry, idx, name, phone };
+    }));
+
+    container.innerHTML = rows.map(({ entry, idx, name, phone }) => {
+        const nextLabel = idx === 0
+            ? ' · <span style="color:var(--ios-green);">' +
+            (currentLang === 'en' ? 'Next' : 'अगला') + '</span>'
+            : '';
+        return (
+            '<div class="list-item" style="padding:12px 0;border-bottom:1px solid var(--separator);">' +
+            '<div style="display:flex;align-items:center;gap:12px;width:100%;">' +
+            '<span class="queue-num">' + (idx + 1) + '</span>' +
+            '<div class="item-info" style="flex:1;">' +
+            '<h4 style="margin:0;">' + name + '</h4>' +
+            '<p style="margin:0;">' + phone + nextLabel + '</p>' +
+            '</div>' +
+            '<button type="button" class="btn-small" style="background:rgba(255,59,48,0.12);color:var(--ios-red);"' +
+            ' onclick="removeFromQueue(\'' + entry.customerId + '\')">' +
+            (currentLang === 'en' ? 'Remove' : 'हटाएं') +
+            '</button>' +
+            '</div></div>'
+        );
+    }).join('');
+};
+
+
+function updateSeeAllQueueButton() {
+    const btn = document.getElementById('btn-see-all-queue');
+    if (!btn) return;
+    const n = getQueue().length;
+    btn.style.display = n > 1 ? '' : 'none';
+}
+
+function updateRemoveAnnouncementButton(hasAnnouncement) {
+    const btn = document.getElementById('btn-remove-announcement');
+    if (!btn) return;
+    btn.style.display = hasAnnouncement ? '' : 'none';
+}
 
 /* --- INIT & AUTO LOGIN --- */
 const savedOwner = localStorage.getItem('owner_info');

@@ -329,9 +329,18 @@
                 </div>
             </div>
 
-            <!-- NEXT IN QUEUE -->
-            <h3 class="section-title mt-4" data-i18n="nextInQueue">Next in queue</h3>
-            <div class="list-card" id="next-in-queue-section" style="margin-bottom: 8px;">
+            <!-- NEXT IN QUEUE + ADD -->
+            <div
+                style="display:flex; align-items:center; justify-content:space-between; gap:8px; margin-top:16px; margin-bottom:8px;">
+                <h3 class="section-title" style="margin:0;" data-i18n="nextInQueue">Next in queue</h3>
+                <div style="display:flex; gap:8px; flex-shrink:0;">
+                    <button type="button" class="btn-small" onclick="openAddToQueueModal()" data-i18n="addToQueue">+
+                        Queue</button>
+                    <button type="button" class="btn-small" id="btn-see-all-queue" onclick="openFullQueueModal()"
+                        style="display:none;">See all</button>
+                </div>
+            </div>
+            <div class="list-card" id="next-in-queue-section" style="margin-bottom: 16px;">
                 <div class="list-item empty-state">
                     <div class="item-info">
                         <p style="color:var(--ios-gray); font-size:14px;">No one waiting in queue</p>
@@ -339,15 +348,16 @@
                 </div>
             </div>
 
-            <!-- CUSTOMER QUEUE -->
-            <h3 class="section-title mt-4" data-i18n="customerQueue">Customer queue</h3>
-            <div class="list-card" id="queue-list-container">
-                <div class="list-item empty-state">
-                    <div class="item-info">
-                        <p data-i18n="noQueue">No customers in queue</p>
+            <!-- CUSTOMER QUEUE — temporarily inactive
+                <h3 class="section-title mt-4" data-i18n="customerQueue">Customer queue</h3>
+                <div class="list-card" id="queue-list-container">
+                    <div class="list-item empty-state">
+                        <div class="item-info">
+                            <p data-i18n="noQueue">No customers in queue</p>
+                        </div>
                     </div>
                 </div>
-            </div>
+            -->
 
             <!-- <h3 class="section-title mt-4" data-i18n="quickActions">Quick Actions</h3>
             <div class="action-buttons">
@@ -376,20 +386,21 @@
                     <div>
                         <button class="btn-small" style="align-self:flex-end;" onclick="saveDailyNote()"
                             data-i18n="sendAnnouncement">Send</button>
-                        <button class="btn-small" style="align-self:flex-end;" onclick="clearAnnouncement()"
+                        <button class="btn-small" id="btn-remove-announcement"
+                            style="align-self:flex-end; display:none;" onclick="clearAnnouncement()"
                             data-i18n="removeAnnouncement">Remove</button>
                     </div>
                 </div>
             </div>
 
-            <h3 class="section-title mt-4" data-i18n="pendingPayments">Pending Payments</h3>
+            <!-- <h3 class="section-title mt-4" data-i18n="pendingPayments">Pending Payments</h3>
             <div class="list-card" id="pending-payments-list">
                 <div class="list-item empty-state">
                     <div class="item-info">
                         <p data-i18n="noPendingPayments">No pending payments</p>
                     </div>
                 </div>
-            </div>
+            </div> -->
         </main>
 
         <!-- CUSTOMERS VIEW -->
@@ -1211,6 +1222,56 @@
                     </div>
                 </div>
                 <button class="btn-primary mt-4" onclick="saveEditWater()">Update & Send for Approval</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- ADD TO QUEUE MODAL (Home) -->
+    <div id="add-to-queue-modal" class="modal-overlay">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3 data-i18n="addToQueue">Add to queue</h3>
+                <button class="close-btn" onclick="closeModal('add-to-queue-modal')">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                        stroke-width="2.5">
+                        <line x1="18" y1="6" x2="6" y2="18" />
+                        <line x1="6" y1="6" x2="18" y2="18" />
+                    </svg>
+                </button>
+            </div>
+            <div class="modal-body">
+                <div class="form-group">
+                    <label data-i18n="customer">Customer</label>
+                    <select id="add-queue-customer">
+                        <option value="">-- Select --</option>
+                    </select>
+                </div>
+                <button class="btn-primary mt-4" onclick="confirmAddToQueueFromHome()" data-i18n="addToQueue">Add to
+                    queue</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="full-queue-modal" class="modal-overlay">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3 data-i18n="customerQueue">Customer queue</h3>
+                <button class="close-btn" onclick="closeModal('full-queue-modal')">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                        stroke-width="2.5">
+                        <line x1="18" y1="6" x2="6" y2="18" />
+                        <line x1="6" y1="6" x2="18" y2="18" />
+                    </svg>
+                </button>
+            </div>
+            <div class="modal-body" style="padding-top:8px;">
+                <div id="full-queue-list">
+                    <!-- filled by JS -->
+                </div>
+                <button type="button" class="btn-primary mt-4"
+                    onclick="closeModal('full-queue-modal'); openAddToQueueModal();">
+                    + Queue
+                </button>
             </div>
         </div>
     </div>

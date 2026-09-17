@@ -4905,23 +4905,6 @@ document.getElementById('login-hi').addEventListener('click', () => setLanguage(
 if (document.getElementById('btn-en')) document.getElementById('btn-en').addEventListener('click', () => setLanguage('en'));
 if (document.getElementById('btn-hi')) document.getElementById('btn-hi').addEventListener('click', () => setLanguage('hi'));
 
-/* --- NAVIGATION --- */
-const navItems = document.querySelectorAll('.bottom-nav .nav-item');
-const views = document.querySelectorAll('.main-view');
-
-navItems.forEach(item => {
-    item.addEventListener('click', (e) => {
-        e.preventDefault();
-        navItems.forEach(nav => nav.classList.remove('active'));
-        item.classList.add('active');
-        const targetId = item.getAttribute('data-target');
-        views.forEach(view => view.classList.remove('active'));
-        document.getElementById(targetId).classList.add('active');
-        window.scrollTo({ top: 0, behavior: 'smooth' });
-        if (targetId === 'view-tubewells') renderTubewells();
-    });
-});
-
 /* --- LOGIN --- */
 let confirmationResult = null;
 /* --- LOGIN STATE --- */
@@ -5579,7 +5562,7 @@ window.openModal = function (id) {
     const el = document.getElementById(id);
     if (!el) return;
     el.classList.add('active');
-    history.pushState({ modal: id }, '');
+    history.pushState({ app: 1 }, '');
 
     if (id === 'start-water-modal') {
         populateCustomerDropdowns();
@@ -5596,105 +5579,129 @@ window.openModal = function (id) {
 
 
 window.closeModal = function (id) {
-    document.getElementById(id).classList.remove('active');
+    const el = document.getElementById(id);
+    if (!el || !el.classList.contains('active')) return;
+    el.classList.remove('active');
+    // Do not history.back() here — it can fight with popstate.
+    // Extra history steps are OK; handleAppBack still closes nothing and moves view.
+};
+
+/* ═══════════════════════════════════════════
+   DEVICE BACK — app stack (reliable)
+   ═══════════════════════════════════════════ */
+
+const APP_HOME = 'view-home';
+
+// Nested view → parent view
+const VIEW_PARENT = {
+    'view-customer-detail': 'view-customers',
+    'view-bahi-ledger': 'view-bahi',
+    'view-customer-usage-history': 'view-customer-usage'
+};
+
+function getActiveMainViewId() {
+    const el = document.querySelector('.main-view.active');
+    return el ? el.id : APP_HOME;
 }
 
+function setActiveNav(targetId) {
+    document.querySelectorAll('.bottom-nav .nav-item').forEach(nav => {
+        nav.classList.toggle('active', nav.getAttribute('data-target') === targetId);
+    });
+}
 
-/* --- DEVICE / BROWSER BACK --- */
-function getActiveModals() {
+function getOpenOverlays() {
     return Array.from(document.querySelectorAll('.modal-overlay.active'));
 }
 
 function closeTopOverlay() {
-    const modals = getActiveModals();
-    if (!modals.length) return false;
-
-    // Last in DOM ≈ topmost
-    const top = modals[modals.length - 1];
-
+    const list = getOpenOverlays();
+    if (!list.length) return false;
+    const top = list[list.length - 1];
     if (top.id === 'confirm-popup-overlay') {
         top.classList.remove('active');
         top.style.display = 'none';
-        return true;
+    } else {
+        top.classList.remove('active');
     }
-
-    top.classList.remove('active');
     return true;
 }
 
-function getActiveMainViewId() {
-    const el = document.querySelector('.main-view.active');
-    return el ? el.id : null;
+function navigateToView(viewId) {
+    const el = document.getElementById(viewId);
+    if (!el) {
+        console.warn('[navigateToView] missing', viewId);
+        return;
+    }
+
+    document.querySelectorAll('.main-view').forEach(v => {
+        v.classList.remove('active');
+    });
+    el.classList.add('active');
+
+    // Owner home must be visible
+    el.style.display = '';
+
+    const tabId = VIEW_PARENT[viewId] || viewId;
+    setActiveNav(tabId);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
 }
 
-function activateHomeNav() {
-    document.querySelectorAll('.bottom-nav .nav-item').forEach(nav => {
-        nav.classList.toggle('active', nav.getAttribute('data-target') === 'view-home');
-    });
+function getAppHome() {
+    return (localStorage.getItem('user_role') === 'customer')
+        ? 'view-customer-usage'
+        : 'view-home';
 }
 
 function handleAppBack() {
-    // 1) Modal / confirm
+    const viewId = getActiveMainViewId();
+    const home = getAppHome();
+    const overlays = getOpenOverlays().map(o => o.id);
+
+    // console.log('[BACK]', { viewId, home, overlays });
+
+    // 1) Close top modal / confirm
     if (closeTopOverlay()) {
         history.pushState({ app: 1 }, '');
         return;
     }
 
-    const viewId = getActiveMainViewId();
-
-    // 2) Nested screens → parent
-    if (viewId === 'view-customer-detail') {
-        showView('view-customers');
-        document.querySelectorAll('.bottom-nav .nav-item').forEach(nav => {
-            nav.classList.toggle('active', nav.getAttribute('data-target') === 'view-customers');
-        });
-        history.pushState({ app: 1 }, '');
-        return;
-    }
-    if (viewId === 'view-bahi-ledger') {
-        showView('view-bahi');
-        document.querySelectorAll('.bottom-nav .nav-item').forEach(nav => {
-            nav.classList.toggle('active', nav.getAttribute('data-target') === 'view-bahi');
-        });
-        history.pushState({ app: 1 }, '');
-        return;
-    }
-    if (viewId === 'view-customer-usage-history') {
-        showView('view-customer-usage');
-        document.querySelectorAll('.bottom-nav .nav-item').forEach(nav => {
-            nav.classList.toggle('active', nav.getAttribute('data-target') === 'view-customer-usage');
-        });
+    // 2) Nested view → parent
+    if (VIEW_PARENT[viewId]) {
+        navigateToView(VIEW_PARENT[viewId]);
         history.pushState({ app: 1 }, '');
         return;
     }
 
-    // 3) Any other main tab → Home
-    if (viewId && viewId !== 'view-home') {
-        showView('view-home');
-        activateHomeNav();
+    // 3) Any other tab → Home  (THIS is Tubewells → Home)
+    if (viewId && viewId !== home) {
+        navigateToView(home);
         history.pushState({ app: 1 }, '');
         return;
     }
 
-    // 4) Already on Home → leave site (default browser)
-    // Do not pushState again — allow real back navigation
-    if (window.history.length > 1) {
-        history.back();
+    // 4) Really on Home → leave app
+    // Keep listener until AFTER this history.back, then re-init if user returns
+    if (window._onAppPopState) {
+        window.removeEventListener('popstate', window._onAppPopState);
+        window._onAppPopState = null;
     }
+    history.back();
 }
 
 function initBackButton() {
-    // One trap state so first Back is handled by us
-    if (!window._appBackReady) {
-        history.pushState({ app: 1 }, '');
-        window._appBackReady = true;
+    // Avoid double listeners
+    if (window._onAppPopState) {
+        window.removeEventListener('popstate', window._onAppPopState);
     }
 
-    window.removeEventListener('popstate', window._onAppPopState);
     window._onAppPopState = function () {
         handleAppBack();
     };
     window.addEventListener('popstate', window._onAppPopState);
+
+    // Always keep one trap state while app is open
+    history.pushState({ app: 1 }, '');
 }
 
 /* --- WATER CALCULATION --- */
@@ -6456,11 +6463,8 @@ window.saveEditWater = async function () {
 };
 
 window.showView = function (viewId) {
-    views.forEach(view => view.classList.remove('active'));
-    document.getElementById(viewId).classList.add('active');
-    navItems.forEach(nav => nav.classList.remove('active'));
-    window.scrollTo({ top: 0, behavior: 'smooth' });
-}
+    navigateToView(viewId);
+};
 
 window.savePayment = async function () {
     if (!window.currentCustomerId) {
@@ -6641,19 +6645,22 @@ function setupOwnerUI() {
     document.querySelectorAll('.bottom-nav .nav-item').forEach(item => {
         item.addEventListener('click', (e) => {
             e.preventDefault();
-            document.querySelectorAll('.bottom-nav .nav-item').forEach(n => n.classList.remove('active'));
-            item.classList.add('active');
             const targetId = item.getAttribute('data-target');
-            document.querySelectorAll('.main-view').forEach(v => v.classList.remove('active'));
-            const target = document.getElementById(targetId);
-            if (target) target.classList.add('active');
-            window.scrollTo({ top: 0, behavior: 'smooth' });
-            if (targetId === 'view-tubewells') renderTubewells();
-            if (targetId === 'view-customers') {
-                renderCustomers();
-                renderLinkRequests();
+
+            navigateToView(targetId);
+            history.pushState({ app: 1 }, '');
+
+            // Extra work after switch
+            if (targetId === 'view-tubewells' && typeof renderTubewells === 'function') {
+                renderTubewells();
             }
-            if (targetId === 'view-bahi') renderBahiCustomers();
+            if (targetId === 'view-customers') {
+                if (typeof renderCustomers === 'function') renderCustomers();
+                if (typeof renderLinkRequests === 'function') renderLinkRequests();
+            }
+            if (targetId === 'view-bahi' && typeof renderBahiCustomers === 'function') {
+                renderBahiCustomers();
+            }
         });
     });
 
@@ -6737,17 +6744,19 @@ function setupCustomerUI() {
     document.querySelectorAll('.bottom-nav .nav-item').forEach(item => {
         item.addEventListener('click', (e) => {
             e.preventDefault();
-            document.querySelectorAll('.bottom-nav .nav-item').forEach(n => n.classList.remove('active'));
-            item.classList.add('active');
             const targetId = item.getAttribute('data-target');
-            document.querySelectorAll('.main-view').forEach(v => v.classList.remove('active'));
-            const target = document.getElementById(targetId);
-            if (target) target.classList.add('active');
-            window.scrollTo({ top: 0, behavior: 'smooth' });
+
+            navigateToView(targetId);
+            history.pushState({ app: 1 }, '');
+
             if (targetId === 'view-customer-usage' || targetId === 'view-my-payments') {
-                if (typeof renderCustomerUsageDashboard === 'function') renderCustomerUsageDashboard();
+                if (typeof renderCustomerUsageDashboard === 'function') {
+                    renderCustomerUsageDashboard();
+                }
             }
-            if (targetId === 'view-my-tubewell' && typeof renderMyTubewell === 'function') renderMyTubewell();
+            if (targetId === 'view-my-tubewell' && typeof renderMyTubewell === 'function') {
+                renderMyTubewell();
+            }
         });
     });
 
@@ -6864,6 +6873,8 @@ window.becomeOwner = function () {
 
             const extra = document.getElementById('owner-extra-fields');
             if (extra) extra.style.display = 'block';
+
+            history.pushState({ app: 1 }, '');
 
             document.getElementById('basic-info-screen').classList.add('active');
             showToast(

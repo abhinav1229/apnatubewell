@@ -2968,14 +2968,14 @@ window.openBahiLedger = async function (id) {
     }
 };
 
-let dashboardPeriod = 'today';
+let dashboardPeriod = 'month';
 
 window.onDashPeriodChange = function (period) {
     setDashboardPeriod(period);
 };
 
 window.setDashboardPeriod = function (period) {
-    dashboardPeriod = period || 'today';
+    dashboardPeriod = period || 'month';
 
     const sel = document.getElementById('dash-period-select');
     if (sel && sel.value !== dashboardPeriod) sel.value = dashboardPeriod;

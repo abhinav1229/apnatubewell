@@ -524,9 +524,9 @@
                     onclick="openModal('water-modal'); if (window.currentCustomerId) document.getElementById('water-customer').value = window.currentCustomerId;">+
                     Water</button>
 
-                <button class="btn-action secondary-action"
-                    style="padding: 12px; font-size: 15px; background: rgba(0,122,255,0.1); color: var(--ios-blue);"
-                    onclick="addCustomerToQueue(window.currentCustomerId)" data-i18n="addToQueue">+ Queue</button>
+                <button id="btn-customer-queue" class="btn-action secondary-action"
+                    style="padding: 12px; flex: 1; font-size: 15px; min-width: 100px; background: rgba(0,122,255,0.1); color: var(--ios-blue);"
+                    onclick="toggleCustomerQueueFromDetail()" data-i18n="addToQueue">+ Queue</button>
 
                 <button class="btn-action secondary-action"
                     style="padding: 12px; font-size: 15px; background: rgba(255,59,48,0.1); color: var(--ios-red);"

@@ -1872,13 +1872,12 @@ window.addCustomerToQueue = async function (customerId) {
         saveQueue(localQ);
     }
 
-    await renderQueue();          // updates Next on Home
-    if (document.getElementById('full-queue-modal')?.classList.contains('active')) {
-        await renderFullQueueList();  // refresh modal if open
-    }
-
+    await renderQueue();
     updateSeeAllQueueButton();
-
+    if (window.currentCustomerId) updateCustomerQueueButton(window.currentCustomerId);
+    if (document.getElementById('full-queue-modal')?.classList.contains('active')) {
+        await renderFullQueueList();
+    }
     showToast(currentLang === 'en' ? 'Added to queue' : 'कतार में जोड़ दिया गया', 'success');
 };
 
@@ -4144,6 +4143,7 @@ window.startOwnerListeners = function () {
 window.renderCustomerDetailUI = function (id) {
     if (typeof openCustomerDetail === 'function') {
         openCustomerDetail(id);
+        updateCustomerQueueButton(id);
     }
 };
 
@@ -6174,6 +6174,7 @@ window.openCustomerDetail = async function (id) {
     document.getElementById('cust-total-hours').innerHTML = totalHours.toFixed(1) + ' <small>Hrs</small>';
     document.getElementById('cust-last-entry').innerText = lastEntry;
     showView('view-customer-detail');
+    updateCustomerQueueButton(id);
 };
 
 window.openEditWaterModal = async function (entryId) {
@@ -7308,6 +7309,44 @@ window.renderFullQueueList = async function () {
             '</div></div>'
         );
     }).join('');
+};
+
+
+function isCustomerInQueue(customerId) {
+    if (!customerId) return false;
+    return getQueue().some(e => String(e.customerId) === String(customerId));
+}
+
+window.updateCustomerQueueButton = function (customerId) {
+    const btn = document.getElementById('btn-customer-queue');
+    if (!btn) return;
+
+    const id = customerId || window.currentCustomerId;
+    if (!id) return;
+
+    if (isCustomerInQueue(id)) {
+        btn.innerText = currentLang === 'en' ? 'In queue · Remove' : 'कतार में · हटाएं';
+        btn.style.background = 'rgba(255,59,48,0.12)';
+        btn.style.color = 'var(--ios-red)';
+        btn.setAttribute('data-in-queue', '1');
+    } else {
+        btn.innerText = currentLang === 'en' ? '+ Queue' : '+ कतार';
+        btn.style.background = 'rgba(0,122,255,0.1)';
+        btn.style.color = 'var(--ios-blue)';
+        btn.setAttribute('data-in-queue', '0');
+    }
+};
+
+window.toggleCustomerQueueFromDetail = async function () {
+    const id = window.currentCustomerId;
+    if (!id) return;
+
+    if (isCustomerInQueue(id)) {
+        await removeFromQueue(id);
+    } else {
+        await addCustomerToQueue(id);
+    }
+    updateCustomerQueueButton(id);
 };
 
 

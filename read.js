@@ -5562,7 +5562,6 @@ window.openModal = function (id) {
     const el = document.getElementById(id);
     if (!el) return;
     el.classList.add('active');
-    history.pushState({ app: 1 }, '');
 
     if (id === 'start-water-modal') {
         populateCustomerDropdowns();
@@ -5589,19 +5588,15 @@ window.closeModal = function (id) {
 /* ═══════════════════════════════════════════
    DEVICE BACK — app stack (reliable)
    ═══════════════════════════════════════════ */
-
-const APP_HOME = 'view-home';
-
-// Nested view → parent view
-const VIEW_PARENT = {
-    'view-customer-detail': 'view-customers',
-    'view-bahi-ledger': 'view-bahi',
-    'view-customer-usage-history': 'view-customer-usage'
-};
+function getAppHome() {
+    return (localStorage.getItem('user_role') === 'customer')
+        ? 'view-customer-usage'
+        : 'view-home';
+}
 
 function getActiveMainViewId() {
     const el = document.querySelector('.main-view.active');
-    return el ? el.id : APP_HOME;
+    return el ? el.id : getAppHome();
 }
 
 function setActiveNav(targetId) {
@@ -5629,17 +5624,10 @@ function closeTopOverlay() {
 
 function navigateToView(viewId) {
     const el = document.getElementById(viewId);
-    if (!el) {
-        console.warn('[navigateToView] missing', viewId);
-        return;
-    }
+    if (!el) return;
 
-    document.querySelectorAll('.main-view').forEach(v => {
-        v.classList.remove('active');
-    });
+    document.querySelectorAll('.main-view').forEach(v => v.classList.remove('active'));
     el.classList.add('active');
-
-    // Owner home must be visible
     el.style.display = '';
 
     const tabId = VIEW_PARENT[viewId] || viewId;
@@ -5647,50 +5635,45 @@ function navigateToView(viewId) {
     window.scrollTo({ top: 0, behavior: 'smooth' });
 }
 
-function getAppHome() {
-    return (localStorage.getItem('user_role') === 'customer')
-        ? 'view-customer-usage'
-        : 'view-home';
+const VIEW_PARENT = {
+    'view-customer-detail': 'view-customers',
+    'view-bahi-ledger': 'view-bahi',
+    'view-customer-usage-history': 'view-customer-usage'
+};
+
+/** Re-arm single trap so next Back hits us again */
+function rearmBackTrap() {
+    history.pushState({ app: 1 }, '');
 }
 
 function handleAppBack() {
+    // 1) Modal / confirm
+    if (closeTopOverlay()) {
+        rearmBackTrap();
+        return;
+    }
+
     const viewId = getActiveMainViewId();
     const home = getAppHome();
-    const overlays = getOpenOverlays().map(o => o.id);
 
-    // console.log('[BACK]', { viewId, home, overlays });
-
-    // 1) Close top modal / confirm
-    if (closeTopOverlay()) {
-        history.pushState({ app: 1 }, '');
-        return;
-    }
-
-    // 2) Nested view → parent
+    // 2) Nested → parent
     if (VIEW_PARENT[viewId]) {
         navigateToView(VIEW_PARENT[viewId]);
-        history.pushState({ app: 1 }, '');
+        rearmBackTrap();
         return;
     }
 
-    // 3) Any other tab → Home  (THIS is Tubewells → Home)
-    if (viewId && viewId !== home) {
+    // 3) Other tab → Home
+    if (viewId !== home) {
         navigateToView(home);
-        history.pushState({ app: 1 }, '');
+        rearmBackTrap();
         return;
     }
 
-    // 4) Really on Home → leave app
-    // Keep listener until AFTER this history.back, then re-init if user returns
-    if (window._onAppPopState) {
-        window.removeEventListener('popstate', window._onAppPopState);
-        window._onAppPopState = null;
-    }
-    history.back();
+    // 4) Home → leave (do NOT rearm)
 }
 
 function initBackButton() {
-    // Avoid double listeners
     if (window._onAppPopState) {
         window.removeEventListener('popstate', window._onAppPopState);
     }
@@ -5700,7 +5683,7 @@ function initBackButton() {
     };
     window.addEventListener('popstate', window._onAppPopState);
 
-    // Always keep one trap state while app is open
+    // ONLY place that sets the initial trap (besides rearmBackTrap)
     history.pushState({ app: 1 }, '');
 }
 
@@ -6324,7 +6307,107 @@ window.openEditWaterModal = async function (entryId) {
     if (amountEl) amountEl.innerText = '₹' + (entry.amount || 0);
 
     calculateEditWater();
+
+    const status = entry.approval_status || 'awaiting_approval';
+    const delBtn = document.getElementById('btn-delete-water-entry');
+    if (delBtn) {
+        // Only while waiting for customer approval
+        delBtn.style.display = (status === 'awaiting_approval' || status === 'rejected') ? '' : 'none';
+    }
+
     openModal('edit-water-modal');
+
+
+    openModal('edit-water-modal');
+};
+
+window.deleteWaterEntry = async function () {
+    const entryId = (document.getElementById('edit-water-id') || {}).value;
+    if (!entryId) {
+        showToast(currentLang === 'en' ? 'Entry not found' : 'एंट्री नहीं मिली', 'error');
+        return;
+    }
+
+    // Confirm still pending on server
+    try {
+        const snap = await getDoc(doc(db, 'water_usage', entryId));
+        if (!snap.exists()) {
+            showToast(currentLang === 'en' ? 'Entry not found' : 'एंट्री नहीं मिली', 'error');
+            return;
+        }
+        const status = snap.data().approval_status || 'awaiting_approval';
+        if (status !== 'awaiting_approval' && status !== 'rejected') {
+            showToast(
+                currentLang === 'en'
+                    ? 'Only pending entries can be deleted'
+                    : 'केवल लंबित एंट्री हटाई जा सकती है',
+                'error'
+            );
+            return;
+        }
+    } catch (e) {
+        console.error(e);
+        showToast(currentLang === 'en' ? 'Could not verify entry' : 'जाँच नहीं हो सकी', 'error');
+        return;
+    }
+
+    showConfirmPopup(
+        currentLang === 'en' ? 'Delete entry?' : 'एंट्री हटाएं?',
+        currentLang === 'en'
+            ? 'This water bill will be removed for you and the customer. This cannot be undone.'
+            : 'यह पानी का बिल आपके और ग्राहक दोनों से हट जाएगा। वापस नहीं आएगा।',
+        currentLang === 'en' ? 'Delete' : 'हटाएं',
+        currentLang === 'en' ? 'Cancel' : 'रद्द करें',
+        async function () {
+            try {
+                await safeDeleteDoc(doc(db, 'water_usage', entryId));
+
+                // Local water history
+                const history = getWaterHistory().filter(h => String(h.id) !== String(entryId));
+                saveWaterHistory(history);
+
+                // customer_history
+                const custHistory = JSON.parse(localStorage.getItem('customer_history') || '{}');
+                Object.keys(custHistory).forEach(cid => {
+                    custHistory[cid] = (custHistory[cid] || []).filter(
+                        e => String(e.id) !== String(entryId)
+                    );
+                });
+                localStorage.setItem('customer_history', JSON.stringify(custHistory));
+
+                // In-memory customerData
+                Object.keys(customerData).forEach(cid => {
+                    if (Array.isArray(customerData[cid].history)) {
+                        customerData[cid].history = customerData[cid].history.filter(
+                            e => String(e.id) !== String(entryId)
+                        );
+                    }
+                });
+
+                closeModal('edit-water-modal');
+                if (window.currentCustomerId) {
+                    openCustomerDetail(window.currentCustomerId);
+                }
+                if (typeof updateDashboardStats === 'function') updateDashboardStats();
+                if (typeof renderPendingPayments === 'function') renderPendingPayments();
+                if (typeof syncOwnerUsageFromServer === 'function') {
+                    await syncOwnerUsageFromServer();
+                }
+
+                showToast(
+                    currentLang === 'en' ? 'Entry deleted' : 'एंट्री हटा दी गई',
+                    'success'
+                );
+            } catch (e) {
+                console.error('deleteWaterEntry', e);
+                showToast(
+                    currentLang === 'en' ? 'Delete failed' : 'हटाने में विफल',
+                    'error'
+                );
+            }
+        },
+        null
+    );
 };
 
 window.calculateEditWater = function () {

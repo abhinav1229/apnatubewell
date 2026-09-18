@@ -1221,7 +1221,16 @@
                         <strong id="edit-water-amount" class="text-blue">₹0</strong>
                     </div>
                 </div>
-                <button class="btn-primary mt-4" onclick="saveEditWater()">Update & Send for Approval</button>
+                <div style="display:flex; flex-direction:column; gap:10px; margin-top:16px;">
+                    <button class="btn-primary" onclick="saveEditWater()">
+                        Update & Send for Approval
+                    </button>
+                    <button type="button" id="btn-delete-water-entry" class="btn-small"
+                        style="display:none; width:100%; padding:14px; font-size:16px; font-weight:700; border:none; border-radius:12px; background:rgba(255,59,48,0.12); color:var(--ios-red);"
+                        onclick="deleteWaterEntry()">
+                        Delete entry
+                    </button>
+                </div>
             </div>
         </div>
     </div>
@@ -1280,10 +1289,10 @@
         console.log('%cHTML expects: read.js', 'color: #FF00FA; font-weight: bold;');
     </script>
     <!-- For Production: -->
-    <script type="module" src="app.js"></script>
+    <!-- <script type="module" src="app.js"></script> -->
 
     <!-- For Testing: -->
-    <!-- <script type="module" src="read.js"></script> -->
+    <script type="module" src="read.js"></script>
 </body>
 
 </html>

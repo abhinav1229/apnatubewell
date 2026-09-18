@@ -4603,6 +4603,34 @@ window.openPaymentModal = function (customerId) {
     openModal('payment-modal');
 };
 
+
+function showOwnerSetupScreen() {
+    // Leave app shell
+    const shell = document.getElementById('app-shell');
+    if (shell) shell.style.display = 'none';
+
+    document.querySelectorAll('.main-view').forEach(v => v.classList.remove('active'));
+
+    // Prefill from existing profile
+    const info = JSON.parse(localStorage.getItem('user_info') || '{}');
+    const nameEl = document.getElementById('owner-name');
+    const villageEl = document.getElementById('owner-village');
+    if (nameEl) nameEl.value = info.name || '';
+    if (villageEl) villageEl.value = info.village || '';
+
+    // MUST show tubewell fields
+    const extra = document.getElementById('owner-extra-fields');
+    if (extra) extra.style.display = 'block';
+
+    const login = document.getElementById('login-screen');
+    if (login) {
+        login.classList.remove('active');
+        login.style.display = 'none';
+    }
+
+    document.getElementById('basic-info-screen').classList.add('active');
+}
+
 /* --- OWNER: SYNC water_usage FROM SERVER INTO LOCAL --- */
 window.syncOwnerUsageFromServer = async function () {
     const ownerUid = localStorage.getItem('user_uid');
@@ -5115,6 +5143,7 @@ document.getElementById('save-basic-info-btn').addEventListener('click', async (
     const phone = localStorage.getItem('user_phone');
     const uid = localStorage.getItem('user_uid');
     const dob = localStorage.getItem('user_dob') || '';
+    userRole = localStorage.getItem('user_role') || userRole || 'owner';
 
     let twName = '';
     let twRate = 150;
@@ -5188,26 +5217,25 @@ document.getElementById('save-basic-info-btn').addEventListener('click', async (
     if (userRole === 'customer') {
         setupCustomerUI();
     } else {
-        localStorage.setItem('owner_info', JSON.stringify({ name, village, phone, email: existingEmail }));
-        const defaultTw = {
-            name: twName,
-            location: village,
-            rate: twRate,
-            status: 'stopped',
-            currentCustomer: null,
-            currentStartTime: null,
-            ownerId: uid
-        };
-        // Only create tubewell if it does not already exist
-        const twRef = doc(db, 'tubewells', uid + '_primary');
-        const twSnap = await getDoc(twRef);
-        if (!twSnap.exists()) {
-            await safeSetDoc(twRef, defaultTw);
-            localStorage.setItem('tubewell_data', JSON.stringify(defaultTw));
+        document.getElementById('role-badge-text').innerText =
+            currentLang === 'en' ? 'Owner Account' : 'मालिक खाता';
+        document.getElementById('role-badge-text').style.background = 'rgba(0,122,255,0.1)';
+        document.getElementById('role-badge-text').style.color = 'var(--ios-blue)';
+
+        const pendingSetup = localStorage.getItem('pending_owner_setup') === 'true';
+        const ownerInfo = localStorage.getItem('owner_info');
+
+        if (ownerInfo && !pendingSetup) {
+            document.getElementById('app-shell').style.display = 'block';
+            loadOwnerData();
+            setupOwnerUI();
         } else {
-            localStorage.setItem('tubewell_data', JSON.stringify(twSnap.data()));
+            // Incomplete owner setup (refresh mid-flow, or old bug)
+            userRole = 'owner';
+            localStorage.setItem('user_role', 'owner');
+            localStorage.setItem('pending_owner_setup', 'true');
+            showOwnerSetupScreen();
         }
-        setupOwnerUI();
     }
     isRegisterMode = false;
     showToast(currentLang === 'en' ? "Welcome!" : "स्वागत है!", "success");
@@ -6814,14 +6842,14 @@ function setupCustomerUI() {
             <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                 <path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/>
             </svg>
-            <span>My Usage</span>
+            <span>Usage</span>
         </div>
         <div class="nav-item" data-target="view-my-tubewell">
             <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                 <path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>
                 <polyline points="9 22 9 12 15 12 15 22"/>
             </svg>
-            <span>My Tubewell</span>
+            <span>Tubewells</span>
         </div>
         <div class="nav-item" data-target="view-my-payments">
             <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -6944,41 +6972,22 @@ window.becomeOwner = function () {
     showConfirmPopup(
         currentLang === 'en' ? 'Become Owner' : 'मालिक बनें',
         currentLang === 'en'
-            ? "Switch to owner mode? Your customer data will be preserved."
-            : "मालिक मोड में स्विच करें? आपका ग्राहक डेटा सुरक्षित रहेगा।",
+            ? 'Switch to owner mode? Your customer data will be preserved.'
+            : 'मालिक मोड में स्विच करें? आपका ग्राहक डेटा सुरक्षित रहेगा।',
         currentLang === 'en' ? 'Continue' : 'जारी रखें',
         currentLang === 'en' ? 'Cancel' : 'रद्द करें',
         () => {
-            // Close profile modal first
-            if (typeof closeModal === 'function') {
-                closeModal('profile-modal');
-            } else {
-                const pm = document.getElementById('profile-modal');
-                if (pm) pm.classList.remove('active');
-            }
+            if (typeof closeModal === 'function') closeModal('profile-modal');
 
             userRole = 'owner';
             localStorage.setItem('user_role', 'owner');
-            document.getElementById('app-shell').style.display = 'none';
-            document.querySelectorAll('.main-view').forEach(v => v.classList.remove('active'));
-            document.querySelectorAll('.customer-only').forEach(v => v.style.display = 'none');
+            localStorage.setItem('pending_owner_setup', 'true'); // survives refresh
+            // do NOT set owner_info yet — setup not finished
 
-            // Pre-fill name/village from existing customer profile
-            const info = JSON.parse(localStorage.getItem('user_info') || '{}');
-            const nameEl = document.getElementById('owner-name');
-            const villageEl = document.getElementById('owner-village');
-            if (nameEl) nameEl.value = info.name || '';
-            if (villageEl) villageEl.value = info.village || '';
-
-            const extra = document.getElementById('owner-extra-fields');
-            if (extra) extra.style.display = 'block';
-
-            history.pushState({ app: 1 }, '');
-
-            document.getElementById('basic-info-screen').classList.add('active');
+            showOwnerSetupScreen();
             showToast(
-                currentLang === 'en' ? "Complete your owner profile" : "अपना मालिक प्रोफाइल पूरा करें",
-                "info"
+                currentLang === 'en' ? 'Complete your owner profile' : 'अपना मालिक प्रोफाइल पूरा करें',
+                'info'
             );
         },
         null

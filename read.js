@@ -2856,8 +2856,13 @@ window.openBahiLedger = async function (id) {
                 stampColor = '#FF3B30'; stampBg = 'rgba(255,59,48,0.12)';
             }
 
-            const paidSoFar = isSettled ? originalAmount : Math.max(0, originalAmount - (partialDue || 0));
-            const dueNow = isSettled ? 0 : (partialDue > 0 ? partialDue : (approved ? originalAmount : 0));
+            const paidSoFar = isSettled
+                ? originalAmount
+                : (partialDue > 0 ? Math.max(0, originalAmount - partialDue) : 0);
+
+            const dueNow = isSettled
+                ? 0
+                : (partialDue > 0 ? partialDue : (approved ? originalAmount : 0));
 
             const balanceFooter = bal == null
                 ? '<div style="padding:12px 18px;border-top:1px dashed var(--separator);font-size:13px;color:var(--ios-gray);">' +
@@ -4318,8 +4323,13 @@ window.renderCustomerUsageDashboard = async function () {
             statusColor = '#FF3B30'; stampColor = '#FF3B30'; stampBg = 'rgba(255,59,48,0.12)';
         }
 
-        const paidSoFar = isSettled ? originalAmount : Math.max(0, originalAmount - partialDue);
-        const dueNow = isSettled ? 0 : (partialDue > 0 ? partialDue : (approvalStatus === 'approved' ? originalAmount : 0));
+        const paidSoFar = isSettled
+            ? originalAmount
+            : (partialDue > 0 ? Math.max(0, originalAmount - partialDue) : 0);
+
+        const dueNow = isSettled
+            ? 0
+            : (partialDue > 0 ? partialDue : (approved ? originalAmount : 0));
 
         let actionsHtml = '';
         if (showActions && approvalStatus === 'awaiting_approval') {
@@ -6087,8 +6097,13 @@ window.openCustomerDetail = async function (id) {
                 stampColor = '#FF3B30'; stampBg = 'rgba(255,59,48,0.12)';
             }
 
-            const paidSoFar = isSettled ? originalAmount : Math.max(0, originalAmount - (partialDue || 0));
-            const dueNow = isSettled ? 0 : (partialDue > 0 ? partialDue : (approved ? originalAmount : 0));
+            const paidSoFar = isSettled
+                ? originalAmount
+                : (partialDue > 0 ? Math.max(0, originalAmount - partialDue) : 0);
+
+            const dueNow = isSettled
+                ? 0
+                : (partialDue > 0 ? partialDue : (approved ? originalAmount : 0));
 
             let editBtn = '';
             if (approvalStatus === 'awaiting_approval' || approvalStatus === 'rejected') {

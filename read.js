@@ -1727,21 +1727,20 @@ window.renderStatusCard = async function () {
         badge.innerText = locales[currentLang].statusWorkInProgress;
         if (occLine) {
             occLine.style.display = 'block';
-            if (occLine) {
-                occLine.style.display = 'block';
-                occLine.style.fontSize = '14px';
-                occLine.style.lineHeight = '1.45';
+            occLine.style.fontSize = '14px';
+            occLine.style.lineHeight = '1.45';
 
-                const titleLine = locales[currentLang].statusWorkInProgress; // "Maintenance" / Hindi
+            const titleLine = currentLang === 'en'
+                ? 'Maintenance in progress'
+                : 'मरम्मत का काम चल रहा है';
 
-                const tipLine = currentLang === 'en'
-                    ? 'When work is done, tap the button below.'
-                    : 'काम पूरा होने पर नीचे वाला बटन दबाएँ।';
+            const tipLine = currentLang === 'en'
+                ? 'When work is done, tap the button below.'
+                : 'काम पूरा होने पर नीचे वाला बटन दबाएँ।';
 
-                occLine.innerHTML =
-                    '<div>' + titleLine + '</div>' +
-                    '<div style="margin-top:4px; color:var(--ios-gray);">' + tipLine + '</div>';
-            }
+            occLine.innerHTML =
+                '<div>' + titleLine + '</div>' +
+                '<div style="margin-top:4px; color:var(--ios-gray);">' + tipLine + '</div>';
         }
         if (btnExit) btnExit.style.display = 'block';
     } else if (status === 'power_issue') {

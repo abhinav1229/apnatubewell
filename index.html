@@ -304,7 +304,7 @@
                         </div>
                     </div>
                     <div id="status-occupant-line" style="font-size: 14px; color: var(--ios-gray);">
-                        <span data-i18n="notOccupied">Not occupied</span>
+                        <!-- <span data-i18n="notOccupied">Not occupied</span> -->
                     </div>
                     <div id="status-time-line" style="font-size: 13px; color: var(--ios-gray); display: none;">
                         <span data-i18n="startedAt">Started at</span>: <span id="status-start-time">-</span>
@@ -380,8 +380,7 @@
             <h3 class="section-title mt-4" data-i18n="notesReminder">Announcement</h3>
             <div class="list-card" style="margin-bottom:16px;">
                 <div class="list-item" style="flex-direction:column; align-items:stretch; gap:8px;">
-                    <textarea id="daily-note-input" rows="2"
-                        placeholder="e.g. Motor repair tomorrow, collect from Ram..."
+                    <textarea id="daily-note-input" rows="5" placeholder="Write your announcement here..."
                         style="width:100%; border:none; background:var(--bg); border-radius:8px; padding:10px; font-size:15px; resize:none;"></textarea>
                     <div>
                         <button class="btn-small" style="align-self:flex-end;" onclick="saveDailyNote()"
@@ -520,9 +519,11 @@
                 <button class="btn-primary" style="padding: 12px; font-size: 15px;"
                     onclick="openPaymentModal(window.currentCustomerId)">+ Add Payment</button>
 
-                <button class="btn-action secondary-action" style="padding: 12px; font-size: 15px;"
-                    onclick="openModal('water-modal'); if (window.currentCustomerId) document.getElementById('water-customer').value = window.currentCustomerId;">+
-                    Water</button>
+                <button class="btn-action secondary-action"
+                    style="padding: 12px; flex: 1; font-size: 15px; min-width: 100px;"
+                    onclick="openWaterModalForCustomer(window.currentCustomerId)">
+                    + Water
+                </button>
 
                 <button id="btn-customer-queue" class="btn-action secondary-action"
                     style="padding: 12px; flex: 1; font-size: 15px; min-width: 100px; background: rgba(0,122,255,0.1); color: var(--ios-blue);"
@@ -909,36 +910,38 @@
             <div class="modal-body">
                 <div class="form-group">
                     <label data-i18n="customer">Customer</label>
+
+                    <!-- Dropdown (Home / general) -->
                     <div class="custom-select" id="water-customer-wrapper">
                         <div class="custom-select-trigger" onclick="toggleCustomSelect()">
-                            <span id="water-customer-display">Ram Lal - Field 1</span>
-                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--ios-gray)"
-                                stroke-width="2.5">
+                            <span id="water-customer-display">Select customer</span>
+                            <svg id="water-customer-chevron" width="16" height="16" viewBox="0 0 24 24" fill="none"
+                                stroke="var(--ios-gray)" stroke-width="2.5">
                                 <polyline points="6 9 12 15 18 9"></polyline>
                             </svg>
                         </div>
-                        <div class="custom-select-options" id="water-customer-options">
-                            <div class="custom-option selected" data-value="1" onclick="selectOption(this)">Ram Lal -
-                                Field 1</div>
-                            <div class="custom-option" data-value="2" onclick="selectOption(this)">Shyam - Field 2</div>
-                        </div>
-                        <input type="hidden" id="water-customer" value="1">
+                        <div class="custom-select-options" id="water-customer-options"></div>
+                        <input type="hidden" id="water-customer" value="">
+                    </div>
+
+                    <!-- Locked name (from customer detail) -->
+                    <div id="water-customer-locked" style="display:none; padding:12px 14px; border-radius:12px;
+        background:var(--bg); border:1px solid var(--separator); font-size:16px; font-weight:600;">
+                        <span id="water-customer-locked-name">—</span>
                     </div>
                 </div>
-                <div class="time-grid">
-                    <div class="form-group">
-                        <label data-i18n="startTime">Start Time</label>
-                        <input type="time" id="time-start" value="06:30">
-                    </div>
-                    <div class="form-group">
-                        <label data-i18n="endTime">End Time</label>
-                        <input type="time" id="time-end" value="08:30">
-                    </div>
+                <div class="form-group">
+                    <label>Start</label>
+                    <input type="datetime-local" id="time-start" oninput="calculateWaterUsage()">
+                </div>
+                <div class="form-group">
+                    <label>End</label>
+                    <input type="datetime-local" id="time-end" oninput="calculateWaterUsage()">
                 </div>
                 <div class="calc-box">
                     <div class="calc-row">
                         <span data-i18n="duration">Duration</span>
-                        <strong id="calc-duration">2.00 Hrs</strong>
+                        <strong id="calc-duration">0.00 Hrs</strong>
                     </div>
                     <div class="calc-row">
                         <span data-i18n="rate">Rate</span>
@@ -946,7 +949,7 @@
                     </div>
                     <div class="calc-row total">
                         <span data-i18n="totalAmount">Total Amount</span>
-                        <strong id="calc-total" class="text-blue">₹300</strong>
+                        <strong id="calc-total" class="text-blue">₹0</strong>
                     </div>
                 </div>
                 <button class="btn-primary mt-4" id="save-water-btn" data-i18n="save">Save Record</button>

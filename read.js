@@ -1691,7 +1691,8 @@ window.renderStatusCard = async function () {
         badge.innerText = locales[currentLang].statusStopped;
         if (occLine) {
             occLine.style.display = 'block';
-            occLine.innerHTML = '<span data-i18n="notOccupied">' + locales[currentLang].notOccupied + '</span>';
+            // occLine.innerHTML = '<span data-i18n="notOccupied">' + locales[currentLang].notOccupied + '</span>';
+            occLine.innerHTML = '';
         }
         if (btnStart) btnStart.style.display = 'block';
         if (btnMaint) btnMaint.style.display = 'block';
@@ -1726,7 +1727,21 @@ window.renderStatusCard = async function () {
         badge.innerText = locales[currentLang].statusWorkInProgress;
         if (occLine) {
             occLine.style.display = 'block';
-            occLine.innerHTML = '<span>' + locales[currentLang].statusWorkInProgress + '</span>';
+            if (occLine) {
+                occLine.style.display = 'block';
+                occLine.style.fontSize = '14px';
+                occLine.style.lineHeight = '1.45';
+
+                const titleLine = locales[currentLang].statusWorkInProgress; // "Maintenance" / Hindi
+
+                const tipLine = currentLang === 'en'
+                    ? 'When work is done, tap the button below.'
+                    : 'काम पूरा होने पर नीचे वाला बटन दबाएँ।';
+
+                occLine.innerHTML =
+                    '<div>' + titleLine + '</div>' +
+                    '<div style="margin-top:4px; color:var(--ios-gray);">' + tipLine + '</div>';
+            }
         }
         if (btnExit) btnExit.style.display = 'block';
     } else if (status === 'power_issue') {
@@ -1734,9 +1749,27 @@ window.renderStatusCard = async function () {
         if (occLine) {
             occLine.style.display = 'block';
             const who = tw.currentCustomer ? getCustomerById(tw.currentCustomer) : null;
-            occLine.innerHTML = who
-                ? (currentLang === 'en' ? 'Power issue · was: ' : 'बिजली समस्या · था: ') + '<strong>' + who.name + '</strong>'
-                : (currentLang === 'en' ? 'Tubewell stopped due to power issue' : 'बिजली समस्या से बंद');
+            if (occLine) {
+                occLine.style.display = 'block';
+                occLine.style.fontSize = '14px';
+                occLine.style.lineHeight = '1.45';
+
+                const whoLine = who
+                    ? (currentLang === 'en'
+                        ? 'Power issue · was: <strong>' + who.name + '</strong>'
+                        : 'बिजली समस्या · था: <strong>' + who.name + '</strong>')
+                    : (currentLang === 'en'
+                        ? 'Tubewell stopped due to power issue'
+                        : 'बिजली समस्या से ट्यूबवेल बंद है');
+
+                const tipLine = currentLang === 'en'
+                    ? 'When power is back, tap the button below.'
+                    : 'बिजली ठीक होने पर नीचे वाला बटन दबाएँ।';
+
+                occLine.innerHTML =
+                    '<div>' + whoLine + '</div>' +
+                    '<div style="margin-top:4px; color:var(--ios-gray);">' + tipLine + '</div>';
+            }
         }
         if (btnExitPower) btnExitPower.style.display = 'block';
         else if (btnExit) btnExit.style.display = 'block'; // fallback
@@ -5621,6 +5654,14 @@ window.closeModal = function (id) {
     el.classList.remove('active');
     // Do not history.back() here — it can fight with popstate.
     // Extra history steps are OK; handleAppBack still closes nothing and moves view.
+
+    // inside closeModal, or when closing water-modal:
+    if (id === 'water-modal') {
+        const wrapper = document.getElementById('water-customer-wrapper');
+        const locked = document.getElementById('water-customer-locked');
+        if (wrapper) wrapper.style.display = '';
+        if (locked) locked.style.display = 'none';
+    }
 };
 
 /* ═══════════════════════════════════════════
@@ -5737,70 +5778,110 @@ function getRate() {
 }
 
 function calculateWaterUsage() {
-    const start = timeStart.value;
-    const end = timeEnd.value;
-    if (!start || !end) return;
-    const today = localDateStr();
-    const startDate = new Date(`${today}T${start}`);
-    let endDate = new Date(`${today}T${end}`);
-    if (endDate < startDate) endDate.setDate(endDate.getDate() + 1);
-    const diffInMs = endDate - startDate;
-    const diffInHours = diffInMs / (1000 * 60 * 60);
-    calcDuration.innerText = `${diffInHours.toFixed(2)} ${locales[currentLang].hrs}`;
+    const startVal = timeStart?.value || '';
+    const endVal = timeEnd?.value || '';
+    if (!startVal || !endVal) return;
+
+    const startMs = new Date(startVal).getTime();
+    const endMs = new Date(endVal).getTime();
+    if (isNaN(startMs) || isNaN(endMs) || endMs <= startMs) {
+        if (calcDuration) calcDuration.innerText = '—';
+        if (calcTotal) calcTotal.innerText = '₹0';
+        return;
+    }
+
+    const hours = (endMs - startMs) / (1000 * 60 * 60);
     const rate = getRate();
-    const totalAmount = diffInHours * rate;
-    calcTotal.innerText = `₹${Math.round(totalAmount)}`;
-    document.getElementById('calc-rate').innerText = `₹${rate} / hr`;
+
+    if (calcDuration) {
+        calcDuration.innerText = (typeof formatDuration === 'function')
+            ? formatDuration(hours)
+            : (hours.toFixed(2) + ' ' + (locales[currentLang].hrs || 'Hrs'));
+        calcDuration.dataset.hours = hours.toFixed(2);
+    }
+    if (calcTotal) calcTotal.innerText = '₹' + Math.round(hours * rate);
+    const rateEl = document.getElementById('calc-rate');
+    if (rateEl) rateEl.innerText = '₹' + rate + ' / hr';
 }
 
 timeStart.addEventListener('change', calculateWaterUsage);
 timeEnd.addEventListener('change', calculateWaterUsage);
 
 /* --- SAVE WATER --- */
+/* --- SAVE WATER --- */
 document.getElementById('save-water-btn').addEventListener('click', async () => {
     const btn = document.getElementById('save-water-btn');
-    btn.innerText = "Saving...";
+    btn.innerText = currentLang === 'en' ? 'Saving...' : 'सेव हो रहा...';
     btn.disabled = true;
-    try {
-        const amountString = calcTotal.innerText.replace('₹', '');
-        const amount = parseFloat(amountString);
-        const customerId = document.getElementById('water-customer').value;
-        const cCheck = getCustomerById(customerId);
 
+    try {
+        const customerId = document.getElementById('water-customer').value;
+        if (!customerId) {
+            showToast(currentLang === 'en' ? 'Select a customer' : 'ग्राहक चुनें', 'error');
+            return;
+        }
+
+        const cCheck = getCustomerById(customerId);
         if (cCheck && cCheck.accountDeleted) {
             showToast(currentLang === 'en' ? 'Customer account deleted' : 'ग्राहक खाता हटाया गया', 'error');
             return;
         }
 
-        const duration = parseFloat(calcDuration.innerText);
-        const today = localDateStr();
+        const startVal = timeStart.value;
+        const endVal = timeEnd.value;
+        if (!startVal || !endVal) {
+            showToast(currentLang === 'en' ? 'Enter start and end' : 'शुरू और बंद समय भरें', 'error');
+            return;
+        }
+
+        const startMs = new Date(startVal).getTime();
+        const endMs = new Date(endVal).getTime();
+        if (isNaN(startMs) || isNaN(endMs) || endMs <= startMs) {
+            showToast(
+                currentLang === 'en' ? 'End must be after start' : 'बंद समय शुरू के बाद होना चाहिए',
+                'error'
+            );
+            return;
+        }
+
+        const duration = (endMs - startMs) / (1000 * 60 * 60);
+        const rate = getRate();
+        const amount = Math.round(duration * rate);
+
+        // datetime-local → date + time (local, no UTC)
+        const startDate = startVal.slice(0, 10);
+        const startTime = startVal.slice(11, 16);
+        const endDate = endVal.slice(0, 10);
+        const endTime = endVal.slice(11, 16);
+
         const ownerUid = localStorage.getItem('user_uid');
         const cust = getCustomerById(customerId) || {};
-        const rate = getRate();
         const ownerInfo = JSON.parse(localStorage.getItem('user_info') || '{}');
         const twLocal = getTubewellData();
+
         const payload = {
             business_id: ownerUid,
             customer_id: customerId,
             customer_uid: cust.customerUid || '',
             customer_phone: cust.phone || '',
             customer_name: cust.name || '',
-            start_time: timeStart.value,
-            end_time: timeEnd.value,
-            duration: duration,
+            start_time: startTime,
+            end_time: endTime,
+            duration: parseFloat(duration.toFixed(2)),
             rate: rate,
             amount: amount,
             status: 'pending',
             approval_status: 'awaiting_approval',
             type: 'water',
-            date: today,
-            end_date: today,
+            date: startDate,
+            end_date: endDate,
             created_at: safeServerTimestamp(),
             owner_name: ownerInfo.name || '',
             owner_phone: localStorage.getItem('user_phone') || '',
             tubewell_name: twLocal.name || 'Tubewell'
         };
-        const docRef = await safeAddDoc(collection(db, "water_usage"), {
+
+        const docRef = await safeAddDoc(collection(db, 'water_usage'), {
             ...payload,
             created_at: safeServerTimestamp(),
             created_at_ms: Date.now()
@@ -5813,34 +5894,41 @@ document.getElementById('save-water-btn').addEventListener('click', async () => 
             ownerName: ownerInfo.name || '',
             usageId: docRef.id,
             amount: amount,
-            duration: duration,
-            date: today,
-            start: timeStart.value,
-            end: timeEnd.value
+            duration: parseFloat(duration.toFixed(2)),
+            date: startDate,
+            start: startTime,
+            end: endTime
         });
 
-        // Save to localStorage for dashboard
         const history = getWaterHistory();
         history.push({
             id: docRef.id || ('local_' + Date.now()),
-            customerId, customerUid: payload.customer_uid, customerPhone: payload.customer_phone,
-            date: today, end_date: today, start: timeStart.value, end: timeEnd.value, duration, rate, amount,
-            status: 'pending', type: 'water'
+            customerId,
+            customerUid: payload.customer_uid,
+            customerPhone: payload.customer_phone,
+            date: startDate,
+            end_date: endDate,
+            start: startTime,
+            end: endTime,
+            duration: parseFloat(duration.toFixed(2)),
+            rate,
+            amount,
+            status: 'pending',
+            approval_status: 'awaiting_approval',
+            type: 'water'
         });
+        saveWaterHistory(history);
 
         await syncOwnerUsageFromServer();
-
         updateDashboardStats();
-        renderPendingPayments();
+        if (typeof renderPendingPayments === 'function') renderPendingPayments();
         closeModal('water-modal');
-        showToast(currentLang === 'en' ? "Record Saved!" : "हिसाब सेव हो गया!", "success");
+        showToast(currentLang === 'en' ? 'Record Saved!' : 'हिसाब सेव हो गया!', 'success');
 
-        if (customerId) {
-            openCustomerDetail(customerId);
-        }
+        if (customerId) openCustomerDetail(customerId);
     } catch (e) {
         console.error(e);
-        showToast("Error saving data.", "error");
+        showToast(currentLang === 'en' ? 'Error saving data.' : 'सेव में त्रुटि।', 'error');
     } finally {
         btn.innerText = locales[currentLang].save;
         btn.disabled = false;
@@ -6218,6 +6306,65 @@ window.openCustomerDetail = async function (id) {
     document.getElementById('cust-last-entry').innerText = lastEntry;
     showView('view-customer-detail');
     updateCustomerQueueButton(id);
+};
+
+function refreshWaterModalRate() {
+    const rate = getRate();
+    const rateEl = document.getElementById('calc-rate');
+    if (rateEl) rateEl.innerText = '₹' + rate + ' / hr';
+
+    // Recalc amount if start/end already filled
+    if (typeof calculateWaterUsage === 'function') {
+        calculateWaterUsage();
+    } else {
+        const totalEl = document.getElementById('calc-total');
+        if (totalEl) totalEl.innerText = '₹0';
+        const durEl = document.getElementById('calc-duration');
+        if (durEl) durEl.innerText = '0.00 Hrs';
+    }
+}
+
+window.openWaterModalForCustomer = function (customerId) {
+    if (!customerId) {
+        showToast(currentLang === 'en' ? 'No customer selected' : 'कोई ग्राहक नहीं चुना', 'error');
+        return;
+    }
+
+    const cust = getCustomerById(customerId) || customerData[customerId] || {};
+    const name = cust.name || 'Customer';
+
+    // Hidden value for save
+    const hidden = document.getElementById('water-customer');
+    if (hidden) hidden.value = customerId;
+
+    // Show locked name only
+    const wrapper = document.getElementById('water-customer-wrapper');
+    const locked = document.getElementById('water-customer-locked');
+    const lockedName = document.getElementById('water-customer-locked-name');
+
+    if (wrapper) wrapper.style.display = 'none';
+    if (locked) locked.style.display = 'block';
+    if (lockedName) lockedName.innerText = name;
+
+    // Optional: refresh rate/calc display
+    if (typeof calculateWaterUsage === 'function') calculateWaterUsage();
+
+    refreshWaterModalRate();
+
+    openModal('water-modal');
+};
+
+/** Open from Home / general — full dropdown */
+window.openWaterModal = function () {
+    const wrapper = document.getElementById('water-customer-wrapper');
+    const locked = document.getElementById('water-customer-locked');
+
+    if (wrapper) wrapper.style.display = '';
+    if (locked) locked.style.display = 'none';
+
+    if (typeof populateCustomerDropdowns === 'function') populateCustomerDropdowns();
+    refreshWaterModalRate();
+    openModal('water-modal');
 };
 
 window.openEditWaterModal = async function (entryId) {
